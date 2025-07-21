@@ -11,5 +11,6 @@ RUN if [ ${USERID} != "0" ]; then useradd --uid ${USERID} ${USERNAME}; fi
 USER ${USERNAME}
 
 COPY tools/bin/testfs/testfs /usr/bin/kraken-testfs
+RUN chmod +x /usr/bin/kraken-testfs
 
 WORKDIR /etc/kraken

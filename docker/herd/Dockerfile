@@ -42,6 +42,12 @@ COPY ./proxy/proxy             /usr/bin/kraken-proxy
 COPY ./tools/bin/testfs/testfs /usr/bin/kraken-testfs
 COPY ./tracker/tracker         /usr/bin/kraken-tracker
 
+RUN chmod +x /usr/bin/kraken-build-index && \
+    chmod +x /usr/bin/kraken-origin && \
+    chmod +x /usr/bin/kraken-proxy && \
+    chmod +x /usr/bin/kraken-testfs && \
+    chmod +x /usr/bin/kraken-tracker
+
 WORKDIR /etc/kraken
 
 COPY ./config /etc/kraken/config

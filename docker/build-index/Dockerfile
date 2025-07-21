@@ -21,4 +21,6 @@ COPY ./nginx/config /etc/kraken-build-index/nginx/config
 COPY ./localdb/migrations /etc/kraken-build-index/localdb/migrations
 COPY ./test/tls /etc/kraken/tls
 
+RUN chmod +x /usr/bin/kraken-build-index
+
 WORKDIR /etc/kraken-build-index

@@ -36,4 +36,6 @@ COPY ./nginx/config /etc/kraken/nginx/config
 COPY ./localdb/migrations /etc/kraken/localdb/migrations
 COPY ./test/tls /etc/kraken/tls
 
+RUN chmod +x /usr/bin/kraken-origin
+
 WORKDIR /etc/kraken
