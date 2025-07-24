@@ -1,0 +1,25 @@
+extends: base.yaml
+
+origin:
+  hosts:
+    static:
+      - "${CLUSTER_NODE_1}:${ORIGIN_PORT}"
+      - "${CLUSTER_NODE_2}:${ORIGIN_PORT}"
+      - "${CLUSTER_NODE_3}:${ORIGIN_PORT}"
+
+build_index:
+  hosts:
+    static:
+      - "${CLUSTER_NODE_1}:${BUILD_INDEX_PORT}"
+      - "${CLUSTER_NODE_2}:${BUILD_INDEX_PORT}"
+      - "${CLUSTER_NODE_3}:${BUILD_INDEX_PORT}"
+
+nginx:
+  cache_dir: /tmp/kraken-proxy-nginx/
+
+tls:
+  name: kraken
+  server:
+    disabled: true
+  client:
+    disabled: true

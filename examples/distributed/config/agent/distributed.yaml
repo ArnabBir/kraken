@@ -1,0 +1,25 @@
+extends: base.yaml
+
+tracker:
+  hosts:
+    static:
+      - "${CLUSTER_LB_TRACKER}"
+    # Fallback to direct nodes
+    fallback:
+      - "${CLUSTER_NODE_1}:${TRACKER_PORT}"
+      - "${CLUSTER_NODE_2}:${TRACKER_PORT}"
+      - "${CLUSTER_NODE_3}:${TRACKER_PORT}"
+
+build_index:
+  hosts:
+    static:
+      - "${CLUSTER_NODE_1}:${BUILD_INDEX_PORT}"
+      - "${CLUSTER_NODE_2}:${BUILD_INDEX_PORT}"
+      - "${CLUSTER_NODE_3}:${BUILD_INDEX_PORT}"
+
+tls:
+  name: kraken
+  server:
+    disabled: true
+  client:
+    disabled: true

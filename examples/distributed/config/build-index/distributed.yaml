@@ -1,0 +1,63 @@
+extends: base.yaml
+
+backends:
+  - namespace: library/.*
+    backend:
+      registry_tag:
+        address: index.docker.io
+        security:
+          basic:
+            username: ""
+            password: ""
+  - namespace: .*
+    backend:
+      redis_tag:
+        redis_cluster:
+          addrs:
+            - "${CLUSTER_NODE_1}:${REDIS_PORT}"
+            - "${CLUSTER_NODE_2}:${REDIS_PORT}"
+            - "${CLUSTER_NODE_3}:${REDIS_PORT}"
+          max_redirects: 3
+        name_path: docker_tag
+
+cluster:
+  hosts:
+    static:
+      - "${CLUSTER_NODE_1}:${BUILD_INDEX_PORT}"
+      - "${CLUSTER_NODE_2}:${BUILD_INDEX_PORT}"
+      - "${CLUSTER_NODE_3}:${BUILD_INDEX_PORT}"
+
+origin:
+  hosts:
+    static:
+      - "${CLUSTER_NODE_1}:${ORIGIN_PORT}"
+      - "${CLUSTER_NODE_2}:${ORIGIN_PORT}"
+      - "${CLUSTER_NODE_3}:${ORIGIN_PORT}"
+
+remotes: {}
+
+tag_replication:
+  retry_interval: 100ms
+  poll_retries_interval: 250ms
+
+tag_types:
+  - namespace: .*
+    type: docker
+    root: tags
+
+tag_store:
+  write_through: false
+
+writeback:
+  retry_interval: 100ms
+  poll_retries_interval: 250ms
+
+nginx:
+  cache_dir: /tmp/kraken-build-index-nginx/
+
+tls:
+  name: kraken
+  server:
+    disabled: true
+  client:
+    disabled: true

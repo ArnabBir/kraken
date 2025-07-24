@@ -1,0 +1,51 @@
+extends: base.yaml
+
+backends:
+  - namespace: library/.*
+    backend:
+      registry_blob:
+        address: index.docker.io
+        security:
+          basic:
+            username: ""
+            password: ""
+  - namespace: company/.*
+    backend:
+      redis_blob:
+        redis_cluster:
+          addrs:
+            - "${CLUSTER_NODE_1}:${REDIS_PORT}"
+            - "${CLUSTER_NODE_2}:${REDIS_PORT}"
+            - "${CLUSTER_NODE_3}:${REDIS_PORT}"
+          max_redirects: 3
+        name_path: identity
+  - namespace: .*
+    backend:
+      redis_blob:
+        redis_cluster:
+          addrs:
+            - "${CLUSTER_NODE_1}:${REDIS_PORT}"
+            - "${CLUSTER_NODE_2}:${REDIS_PORT}"
+            - "${CLUSTER_NODE_3}:${REDIS_PORT}"
+          max_redirects: 3
+        name_path: identity
+
+cluster:
+  static:
+    - "${CLUSTER_NODE_1}:${ORIGIN_PORT}"
+    - "${CLUSTER_NODE_2}:${ORIGIN_PORT}"
+    - "${CLUSTER_NODE_3}:${ORIGIN_PORT}"
+
+hashring:
+  max_replica: 2
+
+writeback:
+  retry_interval: 100ms
+  poll_retries_interval: 250ms
+
+tls:
+  name: kraken
+  server:
+    disabled: true
+  client:
+    disabled: true
