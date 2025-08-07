@@ -382,6 +382,144 @@ docker stop kraken-agent-$(hostname) && docker rm kraken-agent-$(hostname)
 
 ## Troubleshooting
 
+### Build Issues
+
+#### Docker Registry Access Error (Production Environment)
+**Symptoms:**
+```bash
+Sending build context to Docker daemon 143.8MB
+Step 1/18 : FROM debian:12
+Get "https://registry-1.docker.io/v2/": Service Unavailable
+make: *** [Makefile:81: images] Error 1
+```
+
+**Root Cause:** Production VM cannot access Docker Hub registry due to:
+- Corporate firewall blocking external registries
+- No internet access in production environment
+- Proxy configuration issues
+
+**Solutions:**
+
+**Option 1: Configure Docker proxy (if corporate proxy available)**
+```bash
+# Create Docker systemd override directory
+sudo mkdir -p /etc/systemd/system/docker.service.d
+
+# Configure proxy for Docker daemon
+sudo cat > /etc/systemd/system/docker.service.d/http-proxy.conf << 'EOF'
+[Service]
+Environment="HTTP_PROXY=http://proxy.company.com:8080"
+Environment="HTTPS_PROXY=http://proxy.company.com:8080"
+Environment="NO_PROXY=localhost,127.0.0.1,.company.com"
+EOF
+
+# Reload systemd and restart Docker
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+
+# Verify proxy configuration
+docker info | grep -i proxy
+```
+
+**Option 2: Use corporate/internal registry**
+```bash
+# Configure Docker to use internal registry
+sudo mkdir -p /etc/docker
+sudo cat > /etc/docker/daemon.json << 'EOF'
+{
+  "registry-mirrors": ["https://docker-registry.company.com"],
+  "insecure-registries": ["docker-registry.company.com:5000"]
+}
+EOF
+
+# Restart Docker
+sudo systemctl restart docker
+
+# Update Dockerfiles to use internal registry (if needed)
+find docker/ -name "Dockerfile" -exec sed -i 's|FROM debian:12|FROM docker-registry.company.com/debian:12|g' {} \;
+find docker/ -name "Dockerfile" -exec sed -i 's|FROM golang:1.14.15|FROM docker-registry.company.com/golang:1.14.15|g' {} \;
+```
+
+**Option 3: Pre-pull and transfer base images (Air-gapped environment)**
+```bash
+# On a machine with internet access:
+# 1. Pull all required base images
+docker pull debian:12
+docker pull golang:1.14.15
+docker pull nginx:1.13
+docker pull redis:5.0
+
+# 2. Save images to tar files
+mkdir -p kraken-base-images
+docker save debian:12 | gzip > kraken-base-images/debian-12.tar.gz
+docker save golang:1.14.15 | gzip > kraken-base-images/golang-1.14.15.tar.gz
+docker save nginx:1.13 | gzip > kraken-base-images/nginx-1.13.tar.gz
+docker save redis:5.0 | gzip > kraken-base-images/redis-5.0.tar.gz
+
+# 3. Transfer to production VM (via USB, SCP, etc.)
+scp -r kraken-base-images/ user@prod-vm:/tmp/
+
+# On production VM:
+# 4. Load the images
+cd /tmp/kraken-base-images
+docker load < debian-12.tar.gz
+docker load < golang-1.14.15.tar.gz
+docker load < nginx-1.13.tar.gz
+docker load < redis-5.0.tar.gz
+
+# 5. Verify images are available
+docker images
+
+# 6. Now build Kraken images
+cd /path/to/kraken
+make images
+```
+
+**Option 4: Build images externally and transfer**
+```bash
+# On a machine with internet access:
+# 1. Build all Kraken images
+make images
+
+# 2. Save Kraken images
+docker save kraken-agent:dev | gzip > kraken-agent.tar.gz
+docker save kraken-herd:dev | gzip > kraken-herd.tar.gz
+docker save kraken-origin:dev | gzip > kraken-origin.tar.gz
+docker save kraken-proxy:dev | gzip > kraken-proxy.tar.gz
+docker save kraken-tracker:dev | gzip > kraken-tracker.tar.gz
+docker save kraken-build-index:dev | gzip > kraken-build-index.tar.gz
+docker save kraken-testfs:dev | gzip > kraken-testfs.tar.gz
+
+# 3. Transfer to production VM
+scp *.tar.gz user@prod-vm:/tmp/
+
+# On production VM:
+# 4. Load images
+cd /tmp
+docker load < kraken-agent.tar.gz
+docker load < kraken-herd.tar.gz
+docker load < kraken-origin.tar.gz
+docker load < kraken-proxy.tar.gz
+docker load < kraken-tracker.tar.gz
+docker load < kraken-build-index.tar.gz
+docker load < kraken-testfs.tar.gz
+
+# 5. Verify images
+docker images | grep kraken
+```
+
+**Verification:**
+```bash
+# Test Docker registry connectivity
+docker pull hello-world  # Should work if properly configured
+
+# Verify base images are available
+docker images | grep -E "debian|golang|nginx|redis"
+
+# Test Kraken image builds
+make images
+```
+
 ### Common Issues
 
 #### 1. P2P Connection Timeouts (504 Gateway Time-out)
