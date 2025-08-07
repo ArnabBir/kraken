@@ -1,6 +1,9 @@
-FROM debian:12
+FROM docker.phonepe.com/ubuntu
 
-# Fix repository configuration for Debian 12 (bookworm) with CDN mirror for better stability
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Fix repository configuration for Debian 12 (bookworm) with multiple mirrors and better retry logic
 RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until && \
     echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \
     echo 'Acquire::Retries "15";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \

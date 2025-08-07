@@ -1,6 +1,9 @@
 # This image combines all central components into one container, for easier
 # deployment and management.
-FROM debian:12
+FROM docker.phonepe.com/ubuntu
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Fix repository configuration for Debian 12 (bookworm) with multiple mirrors and better retry logic
 RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until && \

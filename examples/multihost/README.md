@@ -444,14 +444,14 @@ find docker/ -name "Dockerfile" -exec sed -i 's|FROM golang:1.14.15|FROM docker-
 ```bash
 # On a machine with internet access:
 # 1. Pull all required base images
-docker pull debian:12
+docker pull docker.phonepe.com/ubuntu
 docker pull golang:1.14.15
 docker pull nginx:1.13
 docker pull redis:5.0
 
 # 2. Save images to tar files
 mkdir -p kraken-base-images
-docker save debian:12 | gzip > kraken-base-images/debian-12.tar.gz
+docker save docker.phonepe.com/ubuntu | gzip > kraken-base-images/ubuntu.tar.gz
 docker save golang:1.14.15 | gzip > kraken-base-images/golang-1.14.15.tar.gz
 docker save nginx:1.13 | gzip > kraken-base-images/nginx-1.13.tar.gz
 docker save redis:5.0 | gzip > kraken-base-images/redis-5.0.tar.gz
@@ -462,7 +462,7 @@ scp -r kraken-base-images/ user@prod-vm:/tmp/
 # On production VM:
 # 4. Load the images
 cd /tmp/kraken-base-images
-docker load < debian-12.tar.gz
+docker load < ubuntu.tar.gz
 docker load < golang-1.14.15.tar.gz
 docker load < nginx-1.13.tar.gz
 docker load < redis-5.0.tar.gz
@@ -514,7 +514,7 @@ docker images | grep kraken
 docker pull hello-world  # Should work if properly configured
 
 # Verify base images are available
-docker images | grep -E "debian|golang|nginx|redis"
+docker images | grep -E "docker.phonepe.com/ubuntu|golang|nginx|redis"
 
 # Test Kraken image builds
 make images
