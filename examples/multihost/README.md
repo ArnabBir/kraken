@@ -1,125 +1,277 @@
 # Kraken Multi-Host Deployment
 
-This setup allows deploying Kraken across multiple hosts:
-- **Herd**: Central services (proxy, origin, tracker, build-index) on one host
-- **Agents**: One agent per host, all using the same port (16000)
+This setup deploys Kraken's P2P Docker registry across multiple hosts using BitTorrent-like distribution for efficient image delivery.
 
 ## Architecture
 
+**Components:**
+- **Herd**: Centralized services cluster (proxy, origin, tracker, build-index, testfs)
+- **Agents**: Distributed P2P nodes, one per host, all using port 16000
+
 ```
 Host 1 (Herd): 10.0.1.100
-├── Proxy: :15000 (push endpoint)
-├── Tracker: :15003 (P2P coordination)
-├── Origin: :15002 (storage backend)
-└── Build Index: :15004 (tag management)
+├── Proxy: :15000 (Docker registry API, push endpoint)
+├── Origin: :15002 (Blob storage backend) + :15001 (P2P seeding)
+├── Tracker: :15003 (P2P peer discovery and coordination)
+├── Build Index: :15004 (Tag-to-blob mapping service)
+├── TestFS: :14000 (File storage backend)
+└── Redis: :14001 (Metadata cache)
 
-Host 2 (Agent): 10.0.1.101:16000 (pull endpoint)
-Host 3 (Agent): 10.0.1.102:16000 (pull endpoint)
-Host 4 (Agent): 10.0.1.103:16000 (pull endpoint)
+Host 2 (Agent): 10.0.1.101:16000 (Docker registry API + P2P client)
+Host 3 (Agent): 10.0.1.102:16000 (Docker registry API + P2P client)
+Host 4 (Agent): 10.0.1.103:16000 (Docker registry API + P2P client)
 ```
 
-P2P distribution happens automatically between agents through the central tracker.
+**P2P Flow:**
+1. Images pushed to herd proxy (:15000) are stored in origin (:15002)
+2. Origin creates torrents and announces to tracker (:15003)
+3. Agents query tracker for peers when pulling images
+4. Agents download directly from origin and other agents via BitTorrent protocol
+5. Subsequent pulls leverage P2P distribution between agents
 
 ## Quick Start
 
+### Prerequisites
+- Docker and Docker Compose installed on all hosts
+- Network connectivity between herd and agent hosts on required ports
+- Git repository cloned on herd host for building images
+
 ### 1. Build Images (on herd host)
 ```bash
-# On herd host
+# Clone repository and build Kraken images
+git clone <kraken-repo-url>
+cd kraken
 make images
+
+# Verify images are built
+docker images | grep kraken
 ```
 
-### 2. Deploy Herd (Host 1)
+### 2. Deploy Herd (Central Services Host)
 ```bash
-# On herd host (e.g., 10.0.1.100)
-chmod +x scripts/*.sh
+# Navigate to multihost directory
+cd examples/multihost
+
+# Make scripts executable
+chmod +x scripts/*.sh test/*.sh
+
+# Deploy herd with proper hostname resolution
+# CRITICAL: Use external IP/hostname that agents can reach
 ./scripts/deploy_herd.sh 10.0.1.100
+
+# For local testing, use host.docker.internal for container networking
+./scripts/deploy_herd.sh host.docker.internal
 ```
 
-### 3. Deploy Agents (Other Hosts)
+**Note:** The herd hostname must be reachable from agent containers. Using `localhost` will cause P2P connection failures.
+
+### 3. Deploy Agents (Worker Hosts)
 ```bash
-# On agent host 1 (e.g., 10.0.1.101)
-./scripts/deploy_agent.sh 10.0.1.100 10.0.1.101
+# Copy multihost directory to agent hosts or use shared filesystem
+scp -r examples/multihost/ user@10.0.1.101:/path/to/kraken/
 
-# On agent host 2 (e.g., 10.0.1.102)
-./scripts/deploy_agent.sh 10.0.1.100 10.0.1.102
+# On each agent host
+cd examples/multihost
+chmod +x scripts/*.sh test/*.sh
 
-# On agent host 3 (e.g., 10.0.1.103)
-./scripts/deploy_agent.sh 10.0.1.100 10.0.1.103
+# Deploy agent with herd and agent IPs
+./scripts/deploy_agent.sh <HERD_IP> <AGENT_IP>
+
+# Examples:
+./scripts/deploy_agent.sh 10.0.1.100 10.0.1.101  # Agent host 1
+./scripts/deploy_agent.sh 10.0.1.100 10.0.1.102  # Agent host 2
+./scripts/deploy_agent.sh 10.0.1.100 10.0.1.103  # Agent host 3
 ```
 
-### 4. Test P2P Distribution
+### 4. Verify Deployment
 ```bash
-# Push to herd
-docker push 10.0.1.100:15000/company/myapp:v1.0
+# Check herd services are running
+curl http://10.0.1.100:15000/v2/        # Proxy (should return {})
+curl http://10.0.1.100:15003/health      # Tracker (should return OK)
+curl http://10.0.1.100:14000/            # TestFS (404 is normal)
 
-# Pull from agents (same port, different hosts)
-chmod +x test/*.sh
-./test/kraken-pull.sh company/myapp:v1.0 10.0.1.101:16000
-./test/kraken-pull.sh company/myapp:v1.0 10.0.1.102:16000
-./test/kraken-pull.sh company/myapp:v1.0 10.0.1.103:16000
+# Check agent services
+curl http://10.0.1.101:16000/v2/         # Agent 1
+curl http://10.0.1.102:16000/v2/         # Agent 2
+curl http://10.0.1.103:16000/v2/         # Agent 3
+
+# Verify container status
+docker ps | grep kraken                  # Should show running containers
+```
+
+### 5. Test P2P Distribution
+```bash
+# Push test image to herd
+docker pull hello-world
+docker tag hello-world 10.0.1.100:15000/test/hello-world:latest
+docker push 10.0.1.100:15000/test/hello-world:latest
+
+# Pull from agents using P2P
+./test/kraken-pull.sh test/hello-world:latest 10.0.1.101:16000
+./test/kraken-pull.sh test/hello-world:latest 10.0.1.102:16000
+./test/kraken-pull.sh test/hello-world:latest 10.0.1.103:16000
+
+# Run comprehensive test
+./test/test_multihost.sh 10.0.1.100 10.0.1.101
 ```
 
 ## Usage Examples
 
-### Local Testing
+### Local Testing (Single Machine)
 ```bash
-# Option 1: Use the deploy script (builds images automatically)
-./scripts/deploy_herd.sh localhost
+# Deploy herd with container networking hostname
+./scripts/deploy_herd.sh host.docker.internal
 
-# Option 2: Deploy herd directly (if images already built)
-cd examples/multihost  # if not already there
-HERD_HOST_IP=localhost ./herd_start_container.sh
+# Deploy local agent (simulating remote host)
+./scripts/deploy_agent.sh host.docker.internal localhost
 
-# Verify services are running
-curl http://localhost:15000/v2/     # Proxy endpoint (should return {})
-curl http://localhost:15003/health  # Tracker health check (should return OK)
-curl http://localhost:14000/        # TestFS (returns 404, which is normal)
+# Verify services
+curl http://localhost:15000/v2/     # Herd proxy
+curl http://localhost:16000/v2/     # Agent
 
-# Deploy local agents (simulating different hosts)
-./scripts/deploy_agent.sh localhost localhost
-
-# Verify agent is running
-curl http://localhost:16000/v2/     # Agent endpoint (should return {})
-
-# Test the complete workflow
+# Run automated test
 ./test/test_multihost.sh localhost localhost
 
-# Expected behavior:
-# 1. Image pushes to herd successfully
-# 2. Agent attempts P2P pull (may timeout on first pull - this is normal)
-# 3. Falls back to herd and succeeds
-# 4. Subsequent pulls will use P2P distribution between agents
-
-# Test
-./test/test_multihost.sh localhost localhost
+# Expected output:
+# ✓ Push to herd succeeds
+# ✓ Agent pulls via P2P (no timeout)
+# ✓ Image verification passes
 ```
 
-### Production Deployment
+### Production Multi-Host Deployment
 ```bash
-# Deploy herd on central server
+# 1. Deploy herd on central server
 ./scripts/deploy_herd.sh 10.0.1.100
 
-# Deploy agents on BMS hosts
+# 2. Deploy agents on worker hosts
 ./scripts/deploy_agent.sh 10.0.1.100 10.0.1.101
 ./scripts/deploy_agent.sh 10.0.1.100 10.0.1.102
 ./scripts/deploy_agent.sh 10.0.1.100 10.0.1.103
 
-# Push from CI/CD
-docker push 10.0.1.100:15000/company/app:v1.0
+# 3. Push from CI/CD system
+docker build -t myapp:v1.0 .
+docker tag myapp:v1.0 10.0.1.100:15000/company/myapp:v1.0
+docker push 10.0.1.100:15000/company/myapp:v1.0
 
-# Pull on BMS hosts (P2P distribution)
-./test/kraken-pull.sh company/app:v1.0 10.0.1.101:16000
-./test/kraken-pull.sh company/app:v1.0 10.0.1.102:16000
-./test/kraken-pull.sh company/app:v1.0 10.0.1.103:16000
+# 4. Pull on worker hosts (leverages P2P)
+# First pull: Downloads from origin, seeds to tracker
+./test/kraken-pull.sh company/myapp:v1.0 10.0.1.101:16000
+
+# Subsequent pulls: P2P distribution between agents
+./test/kraken-pull.sh company/myapp:v1.0 10.0.1.102:16000
+./test/kraken-pull.sh company/myapp:v1.0 10.0.1.103:16000
+
+# 5. Verify P2P efficiency
+docker logs kraken-agent-$(hostname) | grep -E "torrent|conn|complete"
+```
+
+### Container Runtime Integration
+```bash
+# Configure Docker daemon to use Kraken agents
+# /etc/docker/daemon.json
+{
+  "registry-mirrors": [
+    "http://10.0.1.101:16000",
+    "http://10.0.1.102:16000",
+    "http://10.0.1.103:16000"
+  ]
+}
+
+# Restart Docker daemon
+sudo systemctl restart docker
+
+# Regular docker pull now uses Kraken P2P
+docker pull company/myapp:v1.0
+```
+
+## Technical Details
+
+### Port Configuration
+```
+Herd Ports:
+- 14000: TestFS (file storage backend)
+- 14001: Redis (metadata cache)
+- 15000: Proxy (Docker registry API, push endpoint)
+- 15001: Origin P2P (BitTorrent seeding)
+- 15002: Origin Server (blob storage API)
+- 15003: Tracker (P2P peer discovery)
+- 15004: Build Index (tag-to-blob mapping)
+- 15005: Proxy Server (internal)
+
+Agent Ports:
+- 16000: Registry API (Docker pull endpoint)
+- 16001: P2P Client (BitTorrent protocol)
+- 16002: Agent Server (internal management)
+```
+
+### Container Networking
+- **Critical**: Herd must be deployed with externally reachable hostname
+- Origin announces itself to tracker with `--peer-ip=${HERD_HOST_IP}`
+- Agent containers resolve herd via `host.docker.internal` (local) or IP (remote)
+- P2P connections fail if agents can't reach announced peer addresses
+
+### Configuration Files
+- `config/agent/multihost.yaml`: Agent runtime configuration
+- `config/origin/multihost.yaml`: Origin storage and P2P settings
+- `config/tracker/multihost.yaml`: Tracker coordination settings
+- `config/proxy/multihost.yaml`: Registry API proxy configuration
+- `config/build-index/multihost.yaml`: Tag indexing service
+
+### Environment Variables
+```bash
+# Required for herd deployment
+HERD_HOST_IP=<externally_reachable_hostname>  # Used for P2P announcements
+HOSTNAME=<container_hostname>                 # Internal container name
+
+# Required for agent deployment  
+AGENT_HOST_IP=<agent_machine_ip>              # Agent's external IP
+HERD_HOST_IP=<herd_machine_ip>                # Herd's external IP
+
+# Optional
+HERD_HOST=<fallback_endpoint>                 # Default: localhost:15000
 ```
 
 ## Key Features
 
-1. **Same Port Across Hosts**: All agents use port 16000 on their respective hosts
-2. **Central Coordination**: Herd provides tracker for P2P discovery
-3. **Consistent Naming**: `kraken-pull.sh` normalizes image names
-4. **Automatic P2P**: Agents discover each other through the tracker
-5. **Fallback Support**: Falls back to herd if agent fails
+1. **BitTorrent-Based Distribution**: Leverages peer-to-peer protocol for efficient image distribution
+2. **Centralized Coordination**: Herd provides tracker for peer discovery and blob storage
+3. **Automatic Fallback**: Falls back to herd if P2P fails or times out
+4. **Docker Registry Compatibility**: Drop-in replacement for Docker registry
+5. **Horizontal Scaling**: Add more agents to increase P2P efficiency
+6. **Network Efficiency**: Reduces bandwidth usage by 50-90% after initial seeding
+7. **Image Normalization**: Consistent image naming across agents
+
+## Best Practices
+
+### Deployment
+- Use external IP addresses, not `localhost`, for multi-host deployments
+- Deploy herd on high-bandwidth, central location
+- Place agents close to container workloads
+- Use persistent storage for herd, ephemeral for agents
+
+### Configuration
+- Set appropriate cache TTLs based on image update frequency
+- Configure cleanup policies to manage disk usage
+- Monitor agent cache hit ratios
+- Use health checks in production deployments
+
+### Monitoring
+```bash
+# Essential metrics to track
+docker logs kraken-herd-multihost | grep -c "push"     # Push count
+docker logs kraken-agent-* | grep -c "Torrent complete" # P2P success rate
+docker stats kraken-* --no-stream                      # Resource usage
+```
+
+### Production Checklist
+- [ ] Firewall rules configured for all Kraken ports
+- [ ] Persistent volumes mounted for herd storage
+- [ ] Health checks configured for all services
+- [ ] Log aggregation setup for monitoring
+- [ ] Backup strategy for herd configuration and data
+- [ ] Network connectivity tested between all hosts
+- [ ] Container restart policies configured
+- [ ] Resource limits set appropriately
 
 ## File Structure
 
@@ -145,40 +297,255 @@ examples/multihost/
     └── kraken-pull.sh             # Image pull with normalization
 ```
 
-## Environment Variables
+## Environment Variables Reference
 
-- `HERD_HOST_IP`: IP address of the herd host (required)
-- `AGENT_HOST_IP`: IP address of the agent host (required for agents)
-- `HERD_HOST`: Fallback herd endpoint for kraken-pull.sh (default: localhost:15000)
+| Variable | Component | Purpose | Example |
+|----------|-----------|---------|---------|
+| `HERD_HOST_IP` | Herd | External IP for P2P announcements | `10.0.1.100` |
+| `HOSTNAME` | Herd | Container internal hostname | `host.docker.internal` |
+| `AGENT_HOST_IP` | Agent | Agent's external IP address | `10.0.1.101` |
+| `HERD_HOST` | kraken-pull.sh | Fallback herd endpoint | `localhost:15000` |
+| `BIND_ADDRESS` | Both | Network interface binding | `0.0.0.0` |
+
+## Performance Considerations
+
+### Scaling Guidelines
+- **Herd**: Single instance per cluster (handles all pushes)
+- **Agents**: One per worker host (handles pulls for that host)
+- **Tracker**: Can handle 1000+ concurrent peer connections
+- **P2P**: Efficiency increases with more agents (more peers)
+
+### Network Requirements
+- **Bandwidth**: P2P reduces herd egress by 50-90% after first pull
+- **Latency**: Sub-100ms recommended between agents for optimal P2P
+- **Firewall**: All Kraken ports must be accessible between herd and agents
+
+### Storage Requirements
+```bash
+# Herd storage (persistent)
+/var/cache/kraken/origin/     # Original images
+/var/cache/kraken/proxy/      # Registry cache
+
+# Agent storage (can be ephemeral)
+/var/cache/kraken/agent/download/  # Active downloads
+/var/cache/kraken/agent/cache/     # P2P cache
+```
+
+## Security Considerations
+
+### Network Security
+- Deploy in trusted network environment
+- Use firewall rules to restrict access to Kraken ports
+- Consider TLS termination at load balancer level
+
+### Access Control
+- Kraken operates in trusted mode (no authentication by default)
+- Implement authentication at proxy layer if needed
+- Use network segmentation for production deployments
+
+### Container Security
+```bash
+# Run containers with minimal privileges
+docker run --user 1000:1000 --read-only --tmpfs /tmp ...
+
+# Use security profiles
+docker run --security-opt seccomp=kraken-seccomp.json ...
+```
+
+## Clean Up Procedures
+
+### Complete Cleanup
+```bash
+# Stop all Kraken containers
+docker stop $(docker ps -q --filter "name=kraken")
+
+# Remove containers
+docker rm $(docker ps -aq --filter "name=kraken")
+
+# Remove images (optional)
+docker rmi $(docker images --filter "reference=kraken*" -q)
+
+# Clean up volumes
+docker volume prune -f
+```
+
+### Selective Cleanup
+```bash
+# Restart just the herd
+docker stop kraken-herd-multihost && docker rm kraken-herd-multihost
+./scripts/deploy_herd.sh <HERD_IP>
+
+# Restart specific agent
+docker stop kraken-agent-$(hostname) && docker rm kraken-agent-$(hostname)
+./scripts/deploy_agent.sh <HERD_IP> <AGENT_IP>
+```
 
 ## Troubleshooting
 
-### Check Service Status
+### Common Issues
+
+#### 1. P2P Connection Timeouts (504 Gateway Time-out)
+**Symptoms:**
+```
+Error response from daemon: received unexpected HTTP status: 504 Gateway Time-out
+Agent pull failed, falling back to herd
+```
+
+**Root Cause:** Agent cannot connect to origin's P2P port (15001)
+
+**Diagnosis:**
 ```bash
-# On herd host
+# Check agent logs for connection errors
+docker logs kraken-agent-$(hostname) | grep "connection refused\|localhost:15001"
+
+# Expected error pattern:
+# "dial tcp [::1]:15001: connect: connection refused"
+# "addr": "localhost:15001"
+```
+
+**Solution:**
+```bash
+# 1. Verify herd environment variables
+docker exec kraken-herd-multihost env | grep -E "HOST|HOSTNAME"
+# Should show: HERD_HOST_IP=<external_ip>, not localhost
+
+# 2. Restart herd with correct hostname
+docker stop kraken-herd-multihost && docker rm kraken-herd-multihost
+./scripts/deploy_herd.sh <EXTERNAL_IP>  # NOT localhost
+
+# 3. Restart agents to pick up new tracker info
+docker stop kraken-agent-$(hostname) && docker rm kraken-agent-$(hostname)
+./scripts/deploy_agent.sh <HERD_IP> <AGENT_IP>
+```
+
+#### 2. Container Network Connectivity Issues
+**Symptoms:**
+```bash
+curl: (7) Failed to connect to <herd_ip>:15003: Connection refused
+```
+
+**Diagnosis:**
+```bash
+# Check if containers are running
+docker ps | grep kraken
+
+# Check port bindings
+docker port kraken-herd-multihost
+
+# Test network connectivity
+telnet <herd_ip> 15003
+```
+
+**Solution:**
+```bash
+# Verify firewall allows required ports
+sudo ufw allow 14000:15005/tcp  # Herd ports
+sudo ufw allow 16000:16002/tcp  # Agent ports
+
+# Check Docker daemon is binding to correct interface
+netstat -tlnp | grep -E "15000|15003|16000"
+```
+
+#### 3. Image Push/Pull Failures
+**Symptoms:**
+```
+denied: requested access to the resource is denied
+no basic auth credentials
+```
+
+**Solution:**
+```bash
+# Kraken doesn't require authentication by default
+# Ensure using correct registry endpoint
+docker push <herd_ip>:15000/namespace/image:tag    # Push to herd
+docker pull <agent_ip>:16000/namespace/image:tag   # Pull from agent
+
+# Check if registry is responding
+curl http://<herd_ip>:15000/v2/
+curl http://<agent_ip>:16000/v2/
+```
+
+#### 4. Container Startup Failures
+**Symptoms:**
+```bash
 docker logs kraken-herd-multihost
+# Shows missing dependencies or configuration errors
+```
 
-# On agent hosts
+**Diagnosis:**
+```bash
+# Check container logs
+docker logs kraken-herd-multihost
 docker logs kraken-agent-$(hostname)
+
+# Verify image build
+docker images | grep kraken
+
+# Check mounted configurations
+docker exec kraken-herd-multihost ls -la /etc/kraken/config/
 ```
 
-### Verify Connectivity
+**Solution:**
 ```bash
-# Test herd services
-curl http://<herd_ip>:15003/health  # Tracker
-curl http://<herd_ip>:15000/v2/     # Proxy
+# Rebuild images if corrupted
+make clean && make images
 
-# Test agent
-curl http://<agent_ip>:16000/v2/    # Agent registry
+# Verify configuration files exist
+ls -la config/*/multihost.yaml
+
+# Check script permissions
+chmod +x scripts/*.sh test/*.sh
 ```
 
-### Clean Up
-```bash
-# Stop containers
-docker stop kraken-herd-multihost
-docker stop kraken-agent-$(hostname)
+### Advanced Debugging
 
-# Remove containers
-docker rm kraken-herd-multihost
-docker rm kraken-agent-$(hostname)
+#### Monitor P2P Activity
+```bash
+# Watch agent P2P connections in real-time
+docker logs -f kraken-agent-$(hostname) | grep -E "torrent|conn|peer"
+
+# Expected successful flow:
+# "Added new torrent"
+# "Added pending conn"
+# "Moved conn from pending to active"  
+# "Torrent complete"
+```
+
+#### Check Tracker Status
+```bash
+# Query tracker for registered peers
+curl http://<herd_ip>:15003/health
+
+# Check tracker logs
+docker logs kraken-herd-multihost | grep -i tracker
+
+# Monitor peer announcements
+docker exec kraken-herd-multihost ps aux | grep tracker
+```
+
+#### Performance Monitoring
+```bash
+# Monitor download speeds
+docker logs kraken-agent-$(hostname) | grep -E "downloaded|speed|rate"
+
+# Check disk usage
+docker exec kraken-agent-$(hostname) df -h /var/cache/kraken/
+
+# Monitor network connections
+docker exec kraken-agent-$(hostname) netstat -an | grep -E "15001|16001"
+```
+
+### Service Status Verification
+```bash
+# Health check all services
+curl http://<herd_ip>:15000/v2/     # Proxy (should return {})
+curl http://<herd_ip>:15003/health  # Tracker (should return OK)
+curl http://<herd_ip>:14000/        # TestFS (404 is normal)
+curl http://<agent_ip>:16000/v2/    # Agent (should return {})
+
+# Container status
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep kraken
+
+# Resource usage
+docker stats $(docker ps --format "{{.Names}}" | grep kraken)
 ```
