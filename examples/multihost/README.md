@@ -384,6 +384,74 @@ docker stop kraken-agent-$(hostname) && docker rm kraken-agent-$(hostname)
 
 ### Build Issues
 
+#### Docker Permission Denied Error
+**Symptoms:**
+```bash
+make images
+permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock
+make: *** [Makefile:81: images] Error 1
+```
+
+**Root Cause:** Current user doesn't have permission to access Docker daemon socket.
+
+**Solutions:**
+
+**Option 1: Add user to docker group (Recommended)**
+```bash
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Apply group membership (requires logout/login or new shell)
+newgrp docker
+
+# Verify docker access
+docker ps
+docker info
+
+# Now build Kraken images
+make images
+```
+
+**Option 2: Use sudo for Docker commands**
+```bash
+# Build with sudo
+sudo make images
+
+# Alternative: Run docker commands with sudo
+sudo docker build -t kraken-agent:dev -f docker/agent/Dockerfile ./
+```
+
+**Option 3: Fix Docker socket permissions (Temporary)**
+```bash
+# Make docker socket accessible (temporary fix)
+sudo chmod 666 /var/run/docker.sock
+
+# Build images
+make images
+
+# Note: This permission change is lost on Docker daemon restart
+```
+
+**Option 4: Configure Docker daemon for current user**
+```bash
+# Start Docker daemon in user mode (if using Docker Desktop)
+# Or ensure Docker service is running with proper permissions
+sudo systemctl restart docker
+
+# Verify Docker is running
+sudo systemctl status docker
+```
+
+**Verification:**
+```bash
+# Test Docker access without sudo
+docker version
+docker ps
+docker info
+
+# Should work without permission errors
+```
+
 #### Docker Registry Access Error (Production Environment)
 **Symptoms:**
 ```bash
@@ -427,17 +495,20 @@ docker info | grep -i proxy
 sudo mkdir -p /etc/docker
 sudo cat > /etc/docker/daemon.json << 'EOF'
 {
-  "registry-mirrors": ["https://docker-registry.company.com"],
-  "insecure-registries": ["docker-registry.company.com:5000"]
+  "registry-mirrors": ["https://docker.phonepe.com"],
+  "insecure-registries": ["docker.phonepe.com"]
 }
 EOF
 
 # Restart Docker
 sudo systemctl restart docker
 
-# Update Dockerfiles to use internal registry (if needed)
-find docker/ -name "Dockerfile" -exec sed -i 's|FROM debian:12|FROM docker-registry.company.com/debian:12|g' {} \;
-find docker/ -name "Dockerfile" -exec sed -i 's|FROM golang:1.14.15|FROM docker-registry.company.com/golang:1.14.15|g' {} \;
+# Update Dockerfiles to use PhonePe registry for all base images
+find docker/ -name "Dockerfile" -exec sed -i 's|FROM golang:1.14.15|FROM docker.phonepe.com/golang:1.14.15|g' {} \;
+find docker/ -name "Dockerfile" -exec sed -i 's|FROM nginx:1.13|FROM docker.phonepe.com/nginx:1.13|g' {} \;
+find docker/ -name "Dockerfile" -exec sed -i 's|FROM redis:5.0|FROM docker.phonepe.com/redis:5.0|g' {} \;
+
+# Ubuntu base image is already updated to use docker.phonepe.com/ubuntu
 ```
 
 **Option 3: Pre-pull and transfer base images (Air-gapped environment)**
@@ -445,16 +516,16 @@ find docker/ -name "Dockerfile" -exec sed -i 's|FROM golang:1.14.15|FROM docker-
 # On a machine with internet access:
 # 1. Pull all required base images
 docker pull docker.phonepe.com/ubuntu
-docker pull golang:1.14.15
-docker pull nginx:1.13
-docker pull redis:5.0
+docker pull docker.phonepe.com/golang:1.14.15
+docker pull docker.phonepe.com/nginx:1.13
+docker pull docker.phonepe.com/redis:5.0
 
 # 2. Save images to tar files
 mkdir -p kraken-base-images
 docker save docker.phonepe.com/ubuntu | gzip > kraken-base-images/ubuntu.tar.gz
-docker save golang:1.14.15 | gzip > kraken-base-images/golang-1.14.15.tar.gz
-docker save nginx:1.13 | gzip > kraken-base-images/nginx-1.13.tar.gz
-docker save redis:5.0 | gzip > kraken-base-images/redis-5.0.tar.gz
+docker save docker.phonepe.com/golang:1.14.15 | gzip > kraken-base-images/golang-1.14.15.tar.gz
+docker save docker.phonepe.com/nginx:1.13 | gzip > kraken-base-images/nginx-1.13.tar.gz
+docker save docker.phonepe.com/redis:5.0 | gzip > kraken-base-images/redis-5.0.tar.gz
 
 # 3. Transfer to production VM (via USB, SCP, etc.)
 scp -r kraken-base-images/ user@prod-vm:/tmp/
@@ -514,7 +585,7 @@ docker images | grep kraken
 docker pull hello-world  # Should work if properly configured
 
 # Verify base images are available
-docker images | grep -E "docker.phonepe.com/ubuntu|golang|nginx|redis"
+docker images | grep -E "docker.phonepe.com"
 
 # Test Kraken image builds
 make images
