@@ -3,14 +3,9 @@ FROM docker.phonepe.com/ubuntu
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install minimal essential packages required for container operation  
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
-
-# Note: Additional dependencies should be pre-installed on the host VM if needed:
-# Manual installation required: apt-get install -y sqlite3 nginx
+# Note: All dependencies must be pre-installed on the host VM or in the base image
+# Required packages: curl, sqlite3, nginx
+# Manual installation: apt-get install -y curl sqlite3 nginx
 
 RUN mkdir -p -m 777 /var/log/kraken/kraken-origin
 RUN mkdir -p -m 777 /var/cache/kraken/kraken-origin

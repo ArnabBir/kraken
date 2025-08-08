@@ -41,14 +41,14 @@ Host 4 (Agent): 10.0.1.103:16000 (Docker registry API + P2P client)
 ### VM Environment Preparation
 If you're deploying Kraken on on-premise VMs with limited internet access or package repository issues, follow these steps to prepare your environment:
 
-#### 1. Manual Dependency Installation
-Since apt-get sources may not work correctly in restricted environments, manually install required dependencies on all VMs:
+#### 1. Manual Dependency Installation (REQUIRED)
+Since all apt-get commands have been removed from Dockerfiles due to repository access issues, ALL dependencies must be pre-installed on the host VM:
 
 ```bash
 # Update package list (if possible)
 sudo apt-get update || echo "Package update failed - proceeding with manual installation"
 
-# Install core dependencies for all Kraken services
+# Install ALL required dependencies for Kraken services
 sudo apt-get install -y \
     curl \
     nginx \
@@ -57,7 +57,10 @@ sudo apt-get install -y \
     sudo \
     procps \
     gettext-base \
-    redis-server || echo "Some packages may need manual installation"
+    redis-server \
+    make \
+    gcc \
+    libc6-dev || echo "Some packages may need manual installation"
 
 # Alternative: Install packages individually if batch installation fails
 sudo apt-get install -y curl
@@ -67,9 +70,45 @@ sudo apt-get install -y build-essential
 sudo apt-get install -y sudo
 sudo apt-get install -y procps
 sudo apt-get install -y gettext-base
+sudo apt-get install -y redis-server
+sudo apt-get install -y make gcc libc6-dev
 
-# Install Redis (if redis-server package not available)
-# Redis will be built from source in the herd container
+# Verify all installations
+which curl nginx sqlite3 redis-server envsubst make gcc
+```
+
+#### 2. Create Custom Ubuntu Base Image with Dependencies (Alternative Approach)
+If installing packages on host VM is not suitable, create a custom base image:
+
+```bash
+# Create a Dockerfile for custom base image
+cat > Dockerfile.base << 'EOF'
+FROM docker.phonepe.com/ubuntu
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install all required dependencies in base image
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    nginx \
+    sqlite3 \
+    build-essential \
+    sudo \
+    procps \
+    gettext-base \
+    redis-server \
+    make \
+    gcc \
+    libc6-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+EOF
+
+# Build custom base image
+docker build -f Dockerfile.base -t phonepe-ubuntu-kraken:latest .
+
+# Update all Kraken Dockerfiles to use this base image instead of docker.phonepe.com/ubuntu
+find docker/ -name "Dockerfile" -exec sed -i 's|FROM docker.phonepe.com/ubuntu|FROM phonepe-ubuntu-kraken:latest|g' {} \;
 ```
 
 #### 2. Docker Permission Setup
@@ -507,9 +546,7 @@ docker stop kraken-agent-$(hostname) && docker rm kraken-agent-$(hostname)
 **Symptoms:**
 ```bash
 make images
-Step X/Y : RUN apt-get install -y curl nginx
-E: Unable to locate package nginx
-E: Package 'curl' has no installation candidate
+# Build gets stuck at apt-get update or apt-get install steps
 
 # OR container runtime errors:
 docker logs kraken-herd-multihost
@@ -517,69 +554,92 @@ docker logs kraken-herd-multihost
 ./herd_start_processes.sh: line 14: envsubst: command not found
 ```
 
-**Root Cause:** Package repositories not accessible or essential tools missing from containers.
+**Root Cause:** 
+- Package repositories not accessible causing builds to hang
+- All apt-get commands removed from Dockerfiles
+- Dependencies not available in containers
 
 **Solutions:**
 
-**Option 1: Rebuild images with essential packages included**
-The Dockerfiles now include minimal essential packages (curl, gettext-base for herd, build tools for Redis). Try rebuilding:
-
+**Option 1: Install all dependencies on host VM (Recommended)**
 ```bash
-# Clean previous builds and rebuild
-make clean
-make images
-
-# Check if build succeeds
-docker images | grep kraken
-```
-
-**Option 2: Manual dependency installation on host VM (if still needed)**
-```bash
-# Install dependencies directly on the VM (outside containers)
+# Install ALL required packages on the host VM before building images
 sudo apt-get update --allow-releaseinfo-change
-sudo apt-get install -y nginx sqlite3 build-essential redis-server
+sudo apt-get install -y \
+    curl nginx sqlite3 build-essential sudo procps \
+    gettext-base redis-server make gcc libc6-dev
 
-# Verify installations  
-which nginx sqlite3 redis-server
+# Verify all tools are available
+which curl nginx sqlite3 redis-server envsubst make gcc
 
-# Try building again
+# These tools need to be available in the container PATH
+# Check if they're accessible in the base image
+docker run --rm docker.phonepe.com/ubuntu which curl nginx
+
+# Build Kraken images (should now be much faster)
 make images
 ```
 
-**Option 3: Fix package repository sources**
+**Option 2: Create custom base image with all dependencies**
 ```bash
-# If apt-get still fails, try alternative repositories
-sudo cp /etc/apt/sources.list /etc/apt/sources.list.backup
-
-# Add PhonePe or alternative Ubuntu repositories
-sudo cat > /etc/apt/sources.list << 'EOF'
-deb http://archive.ubuntu.com/ubuntu/ focal main restricted universe multiverse
-deb http://archive.ubuntu.com/ubuntu/ focal-updates main restricted universe multiverse
-deb http://security.ubuntu.com/ubuntu/ focal-security main restricted universe multiverse
+# Create custom base image with all dependencies pre-installed
+cat > Dockerfile.kraken-base << 'EOF'
+FROM docker.phonepe.com/ubuntu
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl nginx sqlite3 build-essential sudo procps \
+    gettext-base redis-server make gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/* && apt-get clean
 EOF
 
-# Update and retry
-sudo apt-get clean
-sudo apt-get update
+# Build the base image (do this once when network is available)
+docker build -f Dockerfile.kraken-base -t kraken-base:latest .
+
+# Update all Kraken Dockerfiles to use this base
+find docker/ -name "Dockerfile" -exec sed -i 's|FROM docker.phonepe.com/ubuntu|FROM kraken-base:latest|g' {} \;
+
+# Now build Kraken images
 make images
 ```
 
-**Current Container Dependencies:**
-- **All containers**: `curl` (installed automatically)
-- **Herd container**: `gettext-base`, `make`, `gcc`, `libc6-dev`, Redis from source
-- **Host VM optional**: `nginx`, `sqlite3`, `redis-server` (for additional functionality)
+**Option 3: Use pre-built images from external environment**
+```bash
+# On a machine with internet access:
+# 1. Install dependencies and build images
+sudo apt-get install -y curl nginx sqlite3 build-essential redis-server gettext-base
+make images
+
+# 2. Save all images
+docker save $(docker images --format "{{.Repository}}:{{.Tag}}" | grep kraken) | gzip > kraken-all-images.tar.gz
+
+# 3. Transfer to production VM
+scp kraken-all-images.tar.gz user@prod-vm:/tmp/
+
+# On production VM:
+# 4. Load images
+cd /tmp
+docker load < kraken-all-images.tar.gz
+
+# 5. Skip make images and deploy directly
+cd examples/multihost
+./scripts/deploy_herd.sh <HERD_IP>
+```
+
+**Current Container Dependencies (must be pre-installed):**
+- **All containers**: `curl`
+- **Herd container**: `redis-server`, `envsubst` (gettext-base), `make`, `gcc` (for Redis source build if needed)
+- **Service containers**: `nginx`, `sqlite3`
 
 **Verification:**
 ```bash
-# Test essential tools in containers
-docker run --rm kraken-herd:dev which redis-server envsubst curl
-docker run --rm kraken-agent:dev which curl
+# Verify dependencies are available in containers
+docker run --rm docker.phonepe.com/ubuntu sh -c "which curl nginx sqlite3 redis-server envsubst || echo 'Missing packages'"
 
-# IMPORTANT: Check herd container logs for missing tools
-docker logs kraken-herd-multihost
+# Check if Kraken images build without hanging
+time make images  # Should complete quickly without network calls
 
-# Test Kraken image builds
-make images
+# Test herd container specifically
+docker logs kraken-herd-multihost  # Should not show missing command errors
 ```
 
 #### Docker Permission Denied Error

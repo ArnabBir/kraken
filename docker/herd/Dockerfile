@@ -5,24 +5,18 @@ FROM docker.phonepe.com/ubuntu
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install minimal essential packages that are absolutely required for herd operation
-# These cannot be pre-installed on host VM as they're needed inside the container
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gettext-base \
-    curl \
-    make \
-    gcc \
-    libc6-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+# Note: All dependencies must be pre-installed on the host VM or in the base image
+# Required packages: gettext-base, curl, make, gcc, libc6-dev, build-essential, redis-server
+# Manual installation: apt-get install -y gettext-base curl make gcc libc6-dev build-essential redis-server
 
-# Note: Additional dependencies can be pre-installed on the host VM if needed:
-# apt-get install -y build-essential sqlite3 nginx sudo procps redis-server
+# Note: Redis installation options:
+# Option 1: Install redis-server package on host VM (recommended)
+# Option 2: Build from source (requires build tools) - commented out below
 
-# Install redis from source (to ensure availability)
-ADD http://download.redis.io/redis-stable.tar.gz /tmp/redis-stable.tar.gz
-RUN tar -xvzf /tmp/redis-stable.tar.gz -C /tmp
-RUN cd /tmp/redis-stable && make install
+# Install Redis from source (uncomment if redis-server not available on host)
+# ADD http://download.redis.io/redis-stable.tar.gz /tmp/redis-stable.tar.gz
+# RUN tar -xvzf /tmp/redis-stable.tar.gz -C /tmp
+# RUN cd /tmp/redis-stable && make install
 
 RUN mkdir -p -m 777 /var/log/kraken/kraken-build-index
 RUN mkdir -p -m 777 /var/log/kraken/kraken-origin
