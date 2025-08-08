@@ -36,6 +36,125 @@ Host 4 (Agent): 10.0.1.103:16000 (Docker registry API + P2P client)
 - Network connectivity between herd and agent hosts on required ports
 - Git repository cloned on herd host for building images
 
+## On-Premise VM Setup
+
+### VM Environment Preparation
+If you're deploying Kraken on on-premise VMs with limited internet access or package repository issues, follow these steps to prepare your environment:
+
+#### 1. Manual Dependency Installation
+Since apt-get sources may not work correctly in restricted environments, manually install required dependencies on all VMs:
+
+```bash
+# Update package list (if possible)
+sudo apt-get update || echo "Package update failed - proceeding with manual installation"
+
+# Install core dependencies for all Kraken services
+sudo apt-get install -y \
+    curl \
+    nginx \
+    sqlite3 \
+    build-essential \
+    sudo \
+    procps \
+    gettext-base \
+    redis-server || echo "Some packages may need manual installation"
+
+# Alternative: Install packages individually if batch installation fails
+sudo apt-get install -y curl
+sudo apt-get install -y nginx  
+sudo apt-get install -y sqlite3
+sudo apt-get install -y build-essential
+sudo apt-get install -y sudo
+sudo apt-get install -y procps
+sudo apt-get install -y gettext-base
+
+# Install Redis (if redis-server package not available)
+# Redis will be built from source in the herd container
+```
+
+#### 2. Docker Permission Setup
+```bash
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Apply group membership
+newgrp docker
+
+# Verify Docker access
+docker ps
+docker version
+```
+
+#### 3. PhonePe Docker Registry Configuration
+```bash
+# Configure Docker to use PhonePe internal registry
+sudo mkdir -p /etc/docker
+sudo cat > /etc/docker/daemon.json << 'EOF'
+{
+  "registry-mirrors": ["https://docker.phonepe.com"],
+  "insecure-registries": ["docker.phonepe.com"]
+}
+EOF
+
+# Restart Docker daemon
+sudo systemctl restart docker
+sudo systemctl status docker
+```
+
+#### 4. Directory and Permission Setup
+```bash
+# Create required directories with proper permissions
+sudo mkdir -p /var/log/kraken
+sudo mkdir -p /var/cache/kraken
+sudo mkdir -p /var/run/kraken
+sudo chmod -R 777 /var/log/kraken
+sudo chmod -R 777 /var/cache/kraken
+sudo chmod -R 777 /var/run/kraken
+
+# Verify directories
+ls -la /var/log/ | grep kraken
+ls -la /var/cache/ | grep kraken
+ls -la /var/run/ | grep kraken
+```
+
+#### 5. Network and Firewall Configuration
+```bash
+# Configure firewall for Kraken ports
+sudo ufw allow 14000:15005/tcp  # Herd ports
+sudo ufw allow 16000:16002/tcp  # Agent ports
+
+# Verify port availability
+sudo netstat -tlnp | grep -E "14000|15000|16000"
+
+# Test network connectivity between VMs (replace with actual IPs)
+# From agent VMs to herd VM:
+telnet <HERD_VM_IP> 15000
+telnet <HERD_VM_IP> 15003
+```
+
+#### 6. Verification Checklist
+```bash
+# ✓ Dependencies installed
+which curl nginx sqlite3
+
+# ✓ Docker working
+docker ps
+docker images
+
+# ✓ PhonePe registry accessible
+docker pull docker.phonepe.com/ubuntu || echo "Check registry access"
+
+# ✓ Directories created
+ls -la /var/log/kraken /var/cache/kraken /var/run/kraken
+
+# ✓ Firewall configured
+sudo ufw status | grep -E "14000|15000|16000"
+
+# ✓ Network connectivity (from agent to herd)
+ping <HERD_VM_IP>
+telnet <HERD_VM_IP> 15000
+```
+
 ### 1. Build Images (on herd host)
 ```bash
 # Clone repository and build Kraken images
@@ -384,6 +503,76 @@ docker stop kraken-agent-$(hostname) && docker rm kraken-agent-$(hostname)
 
 ### Build Issues
 
+#### On-Premise VM Dependency Issues
+**Symptoms:**
+```bash
+make images
+Step X/Y : RUN apt-get install -y curl nginx
+E: Unable to locate package nginx
+E: Package 'curl' has no installation candidate
+```
+
+**Root Cause:** Package repositories not accessible or configured correctly in on-premise environment.
+
+**Solutions:**
+
+**Option 1: Manual dependency installation on host VM**
+```bash
+# Install dependencies directly on the VM (outside containers)
+sudo apt-get update --allow-releaseinfo-change
+sudo apt-get install -y curl nginx sqlite3 build-essential redis-server
+
+# Verify installations
+which curl nginx sqlite3 redis-server
+
+# The modified Dockerfiles now expect these to be available in the base image
+# or installed on the host system
+```
+
+**Option 2: Alternative package sources**
+```bash
+# Add alternative Ubuntu repositories
+sudo cp /etc/apt/sources.list /etc/apt/sources.list.backup
+
+# Try different Ubuntu mirrors
+sudo cat > /etc/apt/sources.list << 'EOF'
+deb http://archive.ubuntu.com/ubuntu/ focal main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu/ focal-updates main restricted universe multiverse
+deb http://security.ubuntu.com/ubuntu/ focal-security main restricted universe multiverse
+EOF
+
+# Update and retry
+sudo apt-get clean
+sudo apt-get update
+sudo apt-get install -y curl nginx sqlite3
+```
+
+**Option 3: Download and install packages manually**
+```bash
+# Download .deb packages on a connected machine, transfer to VM
+# On connected machine:
+cd /tmp
+apt-get download curl nginx sqlite3
+scp *.deb user@vm-ip:/tmp/
+
+# On VM:
+cd /tmp
+sudo dpkg -i *.deb
+sudo apt-get install -f  # Fix dependencies if needed
+```
+
+**Verification:**
+```bash
+# Verify all dependencies are available
+curl --version
+nginx -v
+sqlite3 --version
+redis-server --version
+
+# Test Kraken image builds (should now work without apt-get errors)
+make images
+```
+
 #### Docker Permission Denied Error
 **Symptoms:**
 ```bash
@@ -513,6 +702,10 @@ find docker/ -name "Dockerfile" -exec sed -i 's|FROM redis:5.0|FROM docker.phone
 
 **Option 3: Pre-pull and transfer base images (Air-gapped environment)**
 ```bash
+# IMPORTANT: Ensure dependencies are pre-installed on target VMs
+# Run this on target VMs first:
+# sudo apt-get install -y curl nginx sqlite3 build-essential redis-server
+
 # On a machine with internet access:
 # 1. Pull all required base images
 docker pull docker.phonepe.com/ubuntu
@@ -586,6 +779,9 @@ docker pull hello-world  # Should work if properly configured
 
 # Verify base images are available
 docker images | grep -E "docker.phonepe.com"
+
+# IMPORTANT: Verify dependencies are installed on host
+which curl nginx sqlite3 || echo "Install missing dependencies"
 
 # Test Kraken image builds
 make images
