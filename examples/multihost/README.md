@@ -510,31 +510,48 @@ make images
 Step X/Y : RUN apt-get install -y curl nginx
 E: Unable to locate package nginx
 E: Package 'curl' has no installation candidate
+
+# OR container runtime errors:
+docker logs kraken-herd-multihost
+./herd_start_processes.sh: line 5: redis-server: command not found
+./herd_start_processes.sh: line 14: envsubst: command not found
 ```
 
-**Root Cause:** Package repositories not accessible or configured correctly in on-premise environment.
+**Root Cause:** Package repositories not accessible or essential tools missing from containers.
 
 **Solutions:**
 
-**Option 1: Manual dependency installation on host VM**
+**Option 1: Rebuild images with essential packages included**
+The Dockerfiles now include minimal essential packages (curl, gettext-base for herd, build tools for Redis). Try rebuilding:
+
+```bash
+# Clean previous builds and rebuild
+make clean
+make images
+
+# Check if build succeeds
+docker images | grep kraken
+```
+
+**Option 2: Manual dependency installation on host VM (if still needed)**
 ```bash
 # Install dependencies directly on the VM (outside containers)
 sudo apt-get update --allow-releaseinfo-change
-sudo apt-get install -y curl nginx sqlite3 build-essential redis-server
+sudo apt-get install -y nginx sqlite3 build-essential redis-server
 
-# Verify installations
-which curl nginx sqlite3 redis-server
+# Verify installations  
+which nginx sqlite3 redis-server
 
-# The modified Dockerfiles now expect these to be available in the base image
-# or installed on the host system
+# Try building again
+make images
 ```
 
-**Option 2: Alternative package sources**
+**Option 3: Fix package repository sources**
 ```bash
-# Add alternative Ubuntu repositories
+# If apt-get still fails, try alternative repositories
 sudo cp /etc/apt/sources.list /etc/apt/sources.list.backup
 
-# Try different Ubuntu mirrors
+# Add PhonePe or alternative Ubuntu repositories
 sudo cat > /etc/apt/sources.list << 'EOF'
 deb http://archive.ubuntu.com/ubuntu/ focal main restricted universe multiverse
 deb http://archive.ubuntu.com/ubuntu/ focal-updates main restricted universe multiverse
@@ -544,32 +561,24 @@ EOF
 # Update and retry
 sudo apt-get clean
 sudo apt-get update
-sudo apt-get install -y curl nginx sqlite3
+make images
 ```
 
-**Option 3: Download and install packages manually**
-```bash
-# Download .deb packages on a connected machine, transfer to VM
-# On connected machine:
-cd /tmp
-apt-get download curl nginx sqlite3
-scp *.deb user@vm-ip:/tmp/
-
-# On VM:
-cd /tmp
-sudo dpkg -i *.deb
-sudo apt-get install -f  # Fix dependencies if needed
-```
+**Current Container Dependencies:**
+- **All containers**: `curl` (installed automatically)
+- **Herd container**: `gettext-base`, `make`, `gcc`, `libc6-dev`, Redis from source
+- **Host VM optional**: `nginx`, `sqlite3`, `redis-server` (for additional functionality)
 
 **Verification:**
 ```bash
-# Verify all dependencies are available
-curl --version
-nginx -v
-sqlite3 --version
-redis-server --version
+# Test essential tools in containers
+docker run --rm kraken-herd:dev which redis-server envsubst curl
+docker run --rm kraken-agent:dev which curl
 
-# Test Kraken image builds (should now work without apt-get errors)
+# IMPORTANT: Check herd container logs for missing tools
+docker logs kraken-herd-multihost
+
+# Test Kraken image builds
 make images
 ```
 

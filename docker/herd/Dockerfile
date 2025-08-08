@@ -5,11 +5,21 @@ FROM docker.phonepe.com/ubuntu
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Note: Dependencies should be pre-installed on the host VM
-# Manual installation required: 
-# apt-get install -y build-essential curl sqlite3 nginx sudo procps gettext-base redis-server
+# Install minimal essential packages that are absolutely required for herd operation
+# These cannot be pre-installed on host VM as they're needed inside the container
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gettext-base \
+    curl \
+    make \
+    gcc \
+    libc6-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# Install redis from source (since redis-server package may not be available)
+# Note: Additional dependencies can be pre-installed on the host VM if needed:
+# apt-get install -y build-essential sqlite3 nginx sudo procps redis-server
+
+# Install redis from source (to ensure availability)
 ADD http://download.redis.io/redis-stable.tar.gz /tmp/redis-stable.tar.gz
 RUN tar -xvzf /tmp/redis-stable.tar.gz -C /tmp
 RUN cd /tmp/redis-stable && make install
