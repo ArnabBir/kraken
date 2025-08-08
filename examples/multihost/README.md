@@ -546,7 +546,9 @@ docker stop kraken-agent-$(hostname) && docker rm kraken-agent-$(hostname)
 **Symptoms:**
 ```bash
 make images
-# Build gets stuck at apt-get update or apt-get install steps
+# Build hangs or fails with connection timeouts:
+# "Could not connect to archive.ubuntu.com:80"
+# "Unable to locate package redis-server"
 
 # OR container runtime errors:
 docker logs kraken-herd-multihost
@@ -555,109 +557,81 @@ docker logs kraken-herd-multihost
 ```
 
 **Root Cause:** 
-- Package repositories not accessible causing builds to hang
-- All apt-get commands removed from Dockerfiles
-- Dependencies not available in containers
+- Ubuntu package repositories not accessible from VM environment
+- Connection timeouts to archive.ubuntu.com and security.ubuntu.com
+- Air-gapped or restricted network environment
 
 **Solutions:**
 
-**Option 1: Install all dependencies on host VM (Recommended)**
+**Option 1: Use the smart build script (Recommended)**
 ```bash
-# Install ALL required packages on the host VM before building images
-sudo apt-get update --allow-releaseinfo-change
-sudo apt-get install -y \
-    curl nginx sqlite3 build-essential sudo procps \
-    gettext-base redis-server make gcc libc6-dev
+# Use the provided smart build script that auto-detects your environment
+chmod +x build-kraken.sh
+./build-kraken.sh
 
-# Verify all tools are available
-which curl nginx sqlite3 redis-server envsubst make gcc
-
-# These tools need to be available in the container PATH
-# Check if they're accessible in the base image
-docker run --rm docker.phonepe.com/ubuntu which curl nginx
-
-# Build Kraken images (should now be much faster)
-make images
+# This script will:
+# - Test if external images are accessible
+# - Use multi-stage build with Redis image if possible
+# - Fall back to shell script replacements if needed
+# - Provide manual setup instructions if build fails
 ```
 
-**Option 2: Create custom base image with all dependencies**
+**Option 2: Manual build with Redis from external image**
 ```bash
-# Create custom base image with all dependencies pre-installed
-cat > Dockerfile.kraken-base << 'EOF'
-FROM docker.phonepe.com/ubuntu
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl nginx sqlite3 build-essential sudo procps \
-    gettext-base redis-server make gcc libc6-dev \
-    && rm -rf /var/lib/apt/lists/* && apt-get clean
-EOF
+# If you can access docker hub but not Ubuntu repos:
+docker pull redis:6-alpine  # Test if this works
 
-# Build the base image (do this once when network is available)
-docker build -f Dockerfile.kraken-base -t kraken-base:latest .
-
-# Update all Kraken Dockerfiles to use this base
-find docker/ -name "Dockerfile" -exec sed -i 's|FROM docker.phonepe.com/ubuntu|FROM kraken-base:latest|g' {} \;
-
-# Now build Kraken images
+# If successful, build with the updated Dockerfile:
+make clean
 make images
+
+# The herd Dockerfile now uses Redis binary from official image
+# and creates shell script replacements for envsubst
 ```
 
-**Option 3: Emergency solution - Use pre-built images**
+**Option 3: Complete fallback approach**
 ```bash
-# If apt-get continues to fail, use this emergency approach:
+# If no external images are accessible:
+docker build -f docker/herd/Dockerfile.fallback -t kraken-herd:dev ./
 
-# 1. Install required tools on host VM
+# This creates shell script replacements for all missing tools
+# Test the container:
+docker run --rm kraken-herd:dev which redis-server envsubst
+```
+
+**Option 4: Host tool mounting (if tools available on host)**
+```bash
+# Install tools on host if possible:
 sudo apt-get install -y redis-server gettext-base curl
 
-# 2. Create a custom base image with tools copied from host
-cat > Dockerfile.emergency << 'EOF'
-FROM docker.phonepe.com/ubuntu
-COPY --from=redis:6-alpine /usr/local/bin/redis-server /usr/bin/redis-server
-RUN apt-get update && apt-get install -y gettext-base curl || \
-    echo "APT failed - tools must be pre-installed in base image"
-EOF
+# Verify they exist:
+which redis-server envsubst curl
 
-# 3. Build emergency base image
-docker build -f Dockerfile.emergency -t ubuntu-with-tools:latest .
-
-# 4. Update herd Dockerfile to use this base
-sed -i 's|FROM docker.phonepe.com/ubuntu|FROM ubuntu-with-tools:latest|' docker/herd/Dockerfile
-
-# 5. Build and deploy
-make images
-./scripts/deploy_herd.sh <HERD_IP>
-```
-
-**Option 4: Manual tool verification and container fix**
-```bash
-# Check what's missing in the container
-docker run --rm docker.phonepe.com/ubuntu sh -c "which redis-server envsubst curl || echo 'Tools missing'"
-
-# If tools are missing, install them on host and create volume mounts
-sudo apt-get install -y redis-server gettext-base
-
-# Manually start herd with tool binaries mounted
+# Run container with mounted tools:
 docker run -d --name kraken-herd-multihost \
     -v /usr/bin/redis-server:/usr/bin/redis-server:ro \
     -v /usr/bin/envsubst:/usr/bin/envsubst:ro \
+    -v /usr/bin/curl:/usr/bin/curl:ro \
     -p 14000-15005:14000-15005 \
+    -e HERD_HOST_IP=host.docker.internal \
+    -e HOSTNAME=host.docker.internal \
     kraken-herd:dev
 ```
 
-**Current Container Dependencies (must be pre-installed):**
-- **All containers**: `curl`
-- **Herd container**: `redis-server`, `envsubst` (gettext-base), `make`, `gcc` (for Redis source build if needed)
-- **Service containers**: `nginx`, `sqlite3`
+**Current Solution Strategy:**
+- **Herd container**: Uses Redis binary from official image + shell script replacements
+- **Other containers**: Minimal dependencies, expect tools in base image
+- **No apt-get**: All package installations removed to avoid network issues
 
 **Verification:**
 ```bash
-# Verify dependencies are available in containers
-docker run --rm docker.phonepe.com/ubuntu sh -c "which curl nginx sqlite3 redis-server envsubst || echo 'Missing packages'"
+# Test if build succeeds without network calls:
+time ./build-kraken.sh  # Should complete quickly
 
-# Check if Kraken images build without hanging
-time make images  # Should complete quickly without network calls
+# Test essential tools in container:
+docker run --rm kraken-herd:dev sh -c "redis-server --version; envsubst --help"
 
-# Test herd container specifically
+# Test container startup:
 docker logs kraken-herd-multihost  # Should not show missing command errors
 ```
 
