@@ -602,27 +602,46 @@ find docker/ -name "Dockerfile" -exec sed -i 's|FROM docker.phonepe.com/ubuntu|F
 make images
 ```
 
-**Option 3: Use pre-built images from external environment**
+**Option 3: Emergency solution - Use pre-built images**
 ```bash
-# On a machine with internet access:
-# 1. Install dependencies and build images
-sudo apt-get install -y curl nginx sqlite3 build-essential redis-server gettext-base
+# If apt-get continues to fail, use this emergency approach:
+
+# 1. Install required tools on host VM
+sudo apt-get install -y redis-server gettext-base curl
+
+# 2. Create a custom base image with tools copied from host
+cat > Dockerfile.emergency << 'EOF'
+FROM docker.phonepe.com/ubuntu
+COPY --from=redis:6-alpine /usr/local/bin/redis-server /usr/bin/redis-server
+RUN apt-get update && apt-get install -y gettext-base curl || \
+    echo "APT failed - tools must be pre-installed in base image"
+EOF
+
+# 3. Build emergency base image
+docker build -f Dockerfile.emergency -t ubuntu-with-tools:latest .
+
+# 4. Update herd Dockerfile to use this base
+sed -i 's|FROM docker.phonepe.com/ubuntu|FROM ubuntu-with-tools:latest|' docker/herd/Dockerfile
+
+# 5. Build and deploy
 make images
-
-# 2. Save all images
-docker save $(docker images --format "{{.Repository}}:{{.Tag}}" | grep kraken) | gzip > kraken-all-images.tar.gz
-
-# 3. Transfer to production VM
-scp kraken-all-images.tar.gz user@prod-vm:/tmp/
-
-# On production VM:
-# 4. Load images
-cd /tmp
-docker load < kraken-all-images.tar.gz
-
-# 5. Skip make images and deploy directly
-cd examples/multihost
 ./scripts/deploy_herd.sh <HERD_IP>
+```
+
+**Option 4: Manual tool verification and container fix**
+```bash
+# Check what's missing in the container
+docker run --rm docker.phonepe.com/ubuntu sh -c "which redis-server envsubst curl || echo 'Tools missing'"
+
+# If tools are missing, install them on host and create volume mounts
+sudo apt-get install -y redis-server gettext-base
+
+# Manually start herd with tool binaries mounted
+docker run -d --name kraken-herd-multihost \
+    -v /usr/bin/redis-server:/usr/bin/redis-server:ro \
+    -v /usr/bin/envsubst:/usr/bin/envsubst:ro \
+    -p 14000-15005:14000-15005 \
+    kraken-herd:dev
 ```
 
 **Current Container Dependencies (must be pre-installed):**

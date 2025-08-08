@@ -5,18 +5,20 @@ FROM docker.phonepe.com/ubuntu
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Note: All dependencies must be pre-installed on the host VM or in the base image
-# Required packages: gettext-base, curl, make, gcc, libc6-dev, build-essential, redis-server
-# Manual installation: apt-get install -y gettext-base curl make gcc libc6-dev build-essential redis-server
+# Critical: These tools are absolutely required for herd operation and cannot be avoided
+# Install only the minimal essential packages needed for the container to function
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gettext-base \
+    redis-server \
+    curl \
+    make \
+    gcc \
+    libc6-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# Note: Redis installation options:
-# Option 1: Install redis-server package on host VM (recommended)
-# Option 2: Build from source (requires build tools) - commented out below
-
-# Install Redis from source (uncomment if redis-server not available on host)
-# ADD http://download.redis.io/redis-stable.tar.gz /tmp/redis-stable.tar.gz
-# RUN tar -xvzf /tmp/redis-stable.tar.gz -C /tmp
-# RUN cd /tmp/redis-stable && make install
+# Note: If apt-get fails due to repository issues, use pre-built base image approach
+# See README.md for alternative solutions
 
 RUN mkdir -p -m 777 /var/log/kraken/kraken-build-index
 RUN mkdir -p -m 777 /var/log/kraken/kraken-origin
