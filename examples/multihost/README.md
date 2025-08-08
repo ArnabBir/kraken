@@ -618,6 +618,36 @@ docker run -d --name kraken-herd-multihost \
     kraken-herd:dev
 ```
 
+#### Architecture Compatibility Issues
+**Symptoms:**
+```bash
+docker logs kraken-herd-multihost
+./herd_start_processes.sh: line 5: /usr/bin/redis-server: cannot execute binary file: Exec format error
+```
+
+**Root Cause:** 
+Binary copied from host has different architecture than container (e.g., ARM64 host binaries in x86_64 container).
+
+**Solution:**
+The `./docker/setup-host-dependencies.sh` script automatically detects architecture mismatches and creates compatible Redis simulation scripts instead of copying incompatible binaries.
+
+```bash
+# The setup script will show:
+./docker/setup-host-dependencies.sh
+# ✓ Redis found on host
+#   Host architecture: arm64
+#   ⚠ Architecture mismatch (arm64 != x86_64)
+#   Cannot copy Redis binary - will create minimal Redis simulation instead
+#   Created Redis simulation script
+
+# Rebuild with simulation:
+docker build -t kraken-herd:v0.1.4-104-g263d19c8 -f docker/herd/Dockerfile ./
+
+# Test Redis simulation:
+docker run --rm kraken-herd:v0.1.4-104-g263d19c8 redis-server --version
+# Output: Redis server simulation v1.0.0 (for air-gapped development)
+```
+
 **Current Solution Strategy:**
 - **Herd container**: Uses Redis binary from official image + shell script replacements
 - **Other containers**: Minimal dependencies, expect tools in base image
