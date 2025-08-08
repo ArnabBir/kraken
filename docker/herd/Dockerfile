@@ -1,23 +1,23 @@
 # This image combines all central components into one container, for easier
 # deployment and management.
 
-# Use multi-stage build to get Redis from official image
-FROM redis:6-alpine AS redis-source
 FROM docker.phonepe.com/ubuntu
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Copy Redis binary from official Redis image (avoids apt-get)
-COPY --from=redis-source /usr/local/bin/redis-server /usr/bin/redis-server
+# Note: Redis should be pre-installed on the host system or mounted as a volume
+# Expected tools: redis-server, nginx, sqlite3, curl
+# These can be installed manually on the host VM and then:
+# - Either pre-installed in the base image
+# - Or mounted as volumes at runtime
 
-# Create a simple envsubst replacement script since gettext-base is not available
-RUN echo '#!/bin/bash' > /usr/bin/envsubst && \
-    echo 'perl -pe "s/\\\$\{([^}]+)\}/\$ENV{\$1}/g" "$@"' >> /usr/bin/envsubst && \
-    chmod +x /usr/bin/envsubst
+# Copy pre-prepared binaries from host (run ./docker/setup-host-dependencies.sh first)
+# Note: This will fail gracefully if directory doesn't exist
+COPY ./docker/host-binaries/ /usr/bin/
 
-# Create a simple curl replacement or use wget (usually available in ubuntu base)
-RUN if ! which curl; then \
+# Create a simple curl replacement using wget if curl is not available
+RUN if ! which curl >/dev/null 2>&1; then \
         echo '#!/bin/bash' > /usr/bin/curl && \
         echo 'wget -O- "$@"' >> /usr/bin/curl && \
         chmod +x /usr/bin/curl; \
