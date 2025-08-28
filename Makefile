@@ -35,6 +35,7 @@ UNAME_S := $(shell uname -s)
 # However, for tools like puller that don't use cgo, we can build natively on macOS.
 CROSS_COMPILER = \
   docker run --rm \
+    --platform linux/amd64 \
     -v $(REPO_ROOT):/app \
     -w /app \
     -e GIT_SSL_NO_VERIFY=true \
@@ -42,8 +43,11 @@ CROSS_COMPILER = \
     -e GOSUMDB=off \
     -e GOINSECURE="*" \
     -e GO111MODULE=on \
+    -e CGO_ENABLED=0 \
+    -e GOOS=linux \
+    -e GOARCH=amd64 \
     $(GOLANG_IMAGE) \
-    go build -o ./$@ ./$(dir $@);
+    go build -ldflags '-s -w -extldflags "-static"' -o ./$@ ./$(dir $@);
 
 NATIVE_COMPILER = GOOS=$(shell echo $(UNAME_S) | tr '[:upper:]' '[:lower:]') GOARCH=amd64 go build -o $@ ./$(dir $@)
 
