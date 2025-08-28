@@ -1,0 +1,56 @@
+# Alternative Dockerfile for environments where apt-get doesn't work
+# This version expects all tools to be copied from host or base image
+FROM docker.phonepe.com/ubuntu
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Copy essential tools from host system (requires them to be installed on host)
+# To use this approach:
+# 1. Install tools on host: apt-get install -y gettext-base redis-server curl
+# 2. Use this Dockerfile: docker build -f Dockerfile.no-apt -t kraken-herd:dev .
+
+# Create required directories
+RUN mkdir -p -m 777 /var/log/kraken/kraken-build-index
+RUN mkdir -p -m 777 /var/log/kraken/kraken-origin
+RUN mkdir -p -m 777 /var/log/kraken/kraken-proxy
+RUN mkdir -p -m 777 /var/log/kraken/kraken-testfs
+RUN mkdir -p -m 777 /var/log/kraken/kraken-tracker
+
+RUN mkdir -p -m 777 /var/cache/kraken/kraken-build-index
+RUN mkdir -p -m 777 /var/cache/kraken/kraken-origin
+RUN mkdir -p -m 777 /var/cache/kraken/kraken-proxy
+RUN mkdir -p -m 777 /var/cache/kraken/kraken-testfs
+RUN mkdir -p -m 777 /var/cache/kraken/kraken-tracker
+
+RUN mkdir -p -m 777 /var/run/kraken
+RUN mkdir -p -m 777 /var/log/kraken/redis-server
+
+# Note: The following tools must be available in the base image or copied from host:
+# - redis-server (for Redis database)
+# - envsubst (from gettext-base, for config template substitution)
+# - curl (for health checks)
+
+ARG USERNAME="root"
+ARG USERID="0"
+RUN if [ ${USERID} != "0" ]; then useradd --uid ${USERID} ${USERNAME}; fi
+
+# Copy kraken executables
+COPY ./origin/origin /usr/bin/kraken-origin
+COPY ./proxy/proxy /usr/bin/kraken-proxy
+COPY ./tracker/tracker /usr/bin/kraken-tracker
+COPY ./build-index/build-index /usr/bin/kraken-build-index
+COPY ./config /etc/kraken/config
+COPY ./examples/multihost/herd_param.sh /etc/kraken/herd_param.sh
+COPY ./examples/multihost/herd_start_processes.sh /usr/bin/herd_start_processes.sh
+
+RUN chmod +x /usr/bin/kraken-*
+RUN chmod +x /usr/bin/herd_start_processes.sh
+
+USER ${USERNAME}
+
+WORKDIR /etc/kraken
+
+EXPOSE 14000 14001 15000 15001 15002 15003 15004 15005
+
+CMD ["/usr/bin/herd_start_processes.sh"]

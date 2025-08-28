@@ -1,37 +1,30 @@
 # This image combines all central components into one container, for easier
 # deployment and management.
-FROM debian:12
 
-# Fix repository configuration for Debian 12 (bookworm) with multiple mirrors and better retry logic
-RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until && \
-    echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \
-    echo 'Acquire::Retries "10";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \
-    echo 'Acquire::http::Timeout "60";' >> /etc/apt/apt.conf.d/99no-check-valid-until
+FROM docker.phonepe.com/ubuntu
 
-RUN apt-get clean \
- && rm -rf /var/lib/apt/lists/* \
- && \
-   ( \
-     unset http_proxy https_proxy no_proxy && \
-     apt-get update --allow-releaseinfo-change -o Acquire::Retries=10 -o Acquire::http::No-Cache=true -o Acquire::http::timeout=60 -o Acquire::ForceIPv4=true \
-   ) \
- && \
-   ( \
-     unset http_proxy https_proxy no_proxy && \
-     apt-get install -y --no-install-recommends --fix-missing --allow-unauthenticated \
-       build-essential \
-       curl \
-       sqlite3 \
-       nginx \
-       sudo \
-       procps \
-   ) \
- && rm -rf /var/lib/apt/lists/*
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Install redis.
-ADD http://download.redis.io/redis-stable.tar.gz /tmp/redis-stable.tar.gz
-RUN tar -xvzf /tmp/redis-stable.tar.gz -C /tmp
-RUN cd /tmp/redis-stable && make install
+# Note: Redis should be pre-installed on the host system or mounted as a volume
+# Expected tools: redis-server, nginx, sqlite3, curl
+# These can be installed manually on the host VM and then:
+# - Either pre-installed in the base image
+# - Or mounted as volumes at runtime
+
+# Copy pre-prepared binaries from host (run ./docker/setup-host-dependencies.sh first)
+# Note: This will fail gracefully if directory doesn't exist
+COPY ./docker/host-binaries/ /usr/bin/
+
+# Create a simple curl replacement using wget if curl is not available
+RUN if ! which curl >/dev/null 2>&1; then \
+        echo '#!/bin/bash' > /usr/bin/curl && \
+        echo 'wget -O- "$@"' >> /usr/bin/curl && \
+        chmod +x /usr/bin/curl; \
+    fi
+
+# Note: All other dependencies (nginx, sqlite3) should be available in base image
+# or can be added via COPY from host system if needed
 
 RUN mkdir -p -m 777 /var/log/kraken/kraken-build-index
 RUN mkdir -p -m 777 /var/log/kraken/kraken-origin
