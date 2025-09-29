@@ -16,34 +16,33 @@ This document provides a deep technical dive into the origin module: architectur
 ## High‑Level Architecture
 
 ```
-					  +-------------------------------+
-	 Upload /     |                               |   Remote Cluster (optional)
-	 Download --->|  Origin (this module)         |<---- replicateToRemote
-					  |                               |
-					  |  +-------------------------+  |    +------------------+
-  Agents /       |  |  Blob Server (HTTP API)|  |    |  Remote Backends |
-  Tooling        |  +-----------+-------------+  |    | (S3/GCS/HDFS/...)|
-					  |              |                |    +---------+--------+
-					  |              v                |              ^
-					  |      CAStore (disk cache)     |              |
-					  |              |                |              |
-					  |     +--------+----------+     |    +---------+----------+
-					  |     | Metainfo Generator |----+--->|  Backend Manager   |
-					  |     +--------+----------+     |    +---------+----------+
-					  |              |                       |  |  |  |
-					  |     +--------v----------+            |  |  |  +--> Auth / Bandwidth watcher
-					  |     | Blob Refresher    |<-----------+  |  +-----> Backend clients (typed)
-					  |     +--------+----------+               +--------> Persisted Write‑Back tasks
-					  |              |
-					  |   +----------v-----------+   Hash ring membership & sharding
-					  |   |  Replication /      |<-------------------------------+
-					  |   |  Duplicate Uploads  |--------------------------------+
-					  |   +---------------------+
-					  +---------------+---------------+
-											|
-											v
-								Local P2P Client Context
-								(PeerContext: id, zone, cluster)
+				+-------------------------------+
+ Upload / Download  ----------> |        Origin (this module)   | <---- replicateToRemote ---- Remote Cluster (optional)
+				|                               |
+ Agents / Tooling  ------------>|  +-------------------------+  |     +------------------+
+				|  |  Blob Server (HTTP API) |  |     |  Remote Backends |
+				|  +-----------+-------------+  |     | (S3/GCS/HDFS/...)|
+				|              |                |     +---------+--------+
+				|              v                |               ^
+				|      CAStore (disk cache)     |               |
+				|              |                |               |
+				|     +--------+----------+     |     +---------+----------+
+				|     | Metainfo Generator |----+---->|  Backend Manager    |
+				|     +--------+----------+     |     +---------+----------+
+				|              |                      |   |   |   |
+				|     +--------v----------+           |   |   |   +--> Auth / Bandwidth watcher
+				|     |   Blob Refresher  |<----------+   |   +------> Backend clients (typed)
+				|     +--------+----------+              +-----------> Persisted Write-Back tasks
+				|              |
+				|   +----------v-----------+    (Hash ring membership & sharding)
+				|   | Replication /        |<-------------------------------+
+				|   | Duplicate Uploads    |--------------------------------+
+				|   +----------------------+ 
+				+---------------+---------------+
+						|
+						v
+					Local P2P Client Context
+					(PeerContext: id, zone, cluster)
 ```
 
 The origin cluster is a consistent hash ring of origin nodes. Each blob digest maps to a deterministic subset of origin nodes (replication set). Uploads go to the highest scoring owner which then performs best‑effort fan‑out replication (chunked transfer) to sibling owners. For remotely sourced blobs (cache miss), one owner pulls from remote storage and optionally triggers local replication.
