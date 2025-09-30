@@ -70,6 +70,54 @@ Ephemeral nature: Peer presence is valid only until TTL expiry (configured in pe
 
 ---
 
+## Protocol Specification (Announce)
+
+### Version Negotiation
+Clients select announce version (V1 or V2) locally; tracker currently serves both. Future deprecation path: remove V1 after migration (V2 path param avoids ambiguity and requires fewer bytes in body).
+
+### Request (V2 preferred)
+```
+POST /announce/<infohash>
+Content-Type: application/json
+
+{
+  "name": "<digest-hex>" ,      // Backwards compatibility field (to be removed)
+  "digest": {                     // Optional; either digest struct or name is accepted
+    "alg": "sha256",             // Provided implicitly by Hex string; existing clients embed fully
+    "hex": "<64 hex chars>"      // (Simplified here; in code it's core.Digest marshaling)
+  },
+  "info_hash": "<20-byte hex>",  // Must match path parameter (ignored / validated eventually)
+  "peer": {
+    "peer_id": "<string>",
+    "ip": "<ipv4/ipv6>",
+    "port": <int>,
+    "zone": "<az or rack>",
+    "cluster": "<clustername>",
+    "complete": <bool>
+  }
+}
+```
+
+### Response
+```
+200 OK
+{
+  "peers": [ { "peer_id": "...", "ip": "...", "port": 15000, "complete": false, ... }, ...],
+  "interval": 3000000000   // nanoseconds (time.Duration JSON encoding)
+}
+```
+
+### Error Responses (Representative)
+| Condition | HTTP | Body | Notes |
+|-----------|------|------|------|
+| Malformed JSON | 500 | status wrapper | Handler returns internal decode error (legacy pattern). |
+| Invalid infohash hex | 500 | status wrapper | Parsing error before announce logic. |
+| Peer store and origin store both fail / empty | 500 | `no peers available` | Combines aggregated errors (see `errutil.Join`). |
+
+Note: Some internal errors surface as 500 rather than structured codes to keep client logic simple (either treat as transient and retry, or fallback to prior peer set). Future improvement: adopt explicit 4xx vs 5xx separation for invalid client input vs server issues.
+
+---
+
 ## Announce Lifecycle
 
 1. Peer constructs `announceclient.Request` with torrent digest or infohash, own `PeerInfo`, and completion flag.
@@ -112,6 +160,28 @@ type Store interface {
 
 Failure Tolerance: If Redis unavailable and not configured with local fallback, tracker loses ability to hand out dynamic peers (origins still provided via originstore).
 
+### LocalStore Internal Algorithm
+* Data structure per `InfoHash`: `peerGroup` containing slice (`peerList`) + map (`peerMap`) of `peerEntry`.
+* Update path: O(1) append & map insert; expiration timestamp set to `now + TTL` (config default 5h).
+* Cleanup goroutines:
+  * Entry cleanup every 5m: scans groups, collects expired indices, removes in-place via swap-delete for O(e) where e is number expired.
+  * Group cleanup every 1h: removes whole groups whose `lastExpiresAt < now` (fast path ensures minimal locking contention).
+* Random sampling: `rand.Perm(len(peerList))[:n]` yields unique indices; may include slightly expired entries (favor speed over strict freshness). Expired peers disappear gradually after next cleanup cycle.
+
+Trade-offs: Simplicity & speed; accepts modest staleness. Useful for small / test clusters or where Redis not available.
+
+### RedisStore Internal Algorithm
+* Time partitioning: Peers bucketed into fixed-size windows (`PeerSetWindowSize` default 1h). Window key: `peerset:<infohash>:<windowEpoch>`.
+* Peer serialized string: `peer_id:ip:port:completeBit`.
+* TTL: Each window expires at `windowEpoch + windowSize * MaxPeerSetWindows` ensuring sliding retention across multiple windows (e.g. 5 windows => 5h retention by default).
+* Update: `SADD` + `EXPIREAT` pipeline. O(1) for Set insertion.
+* Sampling: shuffle window order; call `SRANDMEMBER` per window until `n` unique peers accumulated. Completion bit collapsed (logical OR) across windows to reflect latest seeder state.
+* De-dup: Map keyed by (peerID, ip, port) ensures uniqueness; final array built from map.
+
+Advantages: Horizontal scaling (multi-tracker processes share state), stable memory footprint bounded by Redis capacity, approximate uniform random sample across recent temporal slices.
+
+Limitations: Completion bit could lag if older window overrides; mitigate by reducing `MaxPeerSetWindows` or window size.
+
 ---
 
 ## Origin Store Caching (`originstore`)
@@ -126,6 +196,16 @@ Mechanisms:
 * On error for specific origin address the system logs and continues; only if all addresses fail is an `allUnavailableError` returned (propagated with peer handout fallback to non-origin peers only).
 
 This design prevents stampeding the origin cluster: multiple simultaneous announces for the same digest share a single inflight retrieval.
+
+TTL Semantics:
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `LocationsTTL` | 10s | Cache of origin addresses for a digest after success. |
+| `LocationsErrorTTL` | 1s | Retry quickly on errors discovering origin addresses. |
+| `OriginContextTTL` | 10s | Cache of peer context (peer id / metadata) for an origin node. |
+| `OriginUnavailableTTL` | 60s | Backoff period when origin address determined unavailable. |
+
+Design Rationale: Short TTLs encourage responsiveness to origin scaling events; error TTL shorter for fast recovery; unavailability TTL longer to avoid hammering down nodes.
 
 ---
 
@@ -180,6 +260,46 @@ Production Deployments: Place behind load balancer performing active health chec
 | `nginx` | Fronting proxy configuration (TLS termination, port mapping). |
 | `metrics` | Backend metrics config (tally sink). |
 
+### Full YAML Example
+```
+peerstore:
+  local:
+    ttl: 5h
+  redis:
+    enabled: true
+    addr: redis:6379
+    peer_set_window_size: 1h
+    max_peer_set_windows: 5
+    dial_timeout: 5s
+    read_timeout: 30s
+    write_timeout: 30s
+    max_idle_conns: 10
+    max_active_conns: 500
+    idle_conn_timeout: 60s
+originstore:
+  locations_ttl: 10s
+  locations_error_ttl: 1s
+  origin_context_ttl: 10s
+  origin_unavailable_ttl: 1m
+trackerserver:
+  get_metainfo_limit: 1s
+  announce_limit: 50
+  announce_interval: 3s
+  listener:
+    net: tcp
+    addr: 0.0.0.0:7200
+peerhandoutpolicy:
+  priority: completeness
+origin:        # upstream origin cluster (active set)
+  # (fields defined in upstream.ActiveConfig)
+tls:
+  # TLS client configuration for origin / build-index
+metrics:
+  # sink configuration
+nginx:
+  # optional front config if embedded
+```
+
 ### Key Tuning Parameters
 * `PeerHandoutLimit`: Larger values increase connectivity & redundancy but raise per-announce payload size and potential connection churn.
 * `AnnounceInterval`: Lower interval accelerates convergence & stale peer cleanup but increases tracker load.
@@ -202,6 +322,18 @@ Custom metrics:
 Observability Tips:
 * Alert on sudden drop in average peers per handout (indicates peerstore or announce issues).
 * Track origin inclusion rate: ratio of origin seeders among provided peers; if zero unexpectedly, originstore may be degraded.
+
+### Metrics Catalog
+| Metric Name | Type | Tags | Description |
+|-------------|------|------|-------------|
+| `trackerserver.request_status` | Counter | `code` | HTTP response status counts. |
+| `trackerserver.request_latency` | Timer | `route` | Per-route latency distribution. |
+| `peerhandoutpolicy.count` | Gauge | `label`, `priority` | Per-priority bucket peer count per announce cycle. |
+| `trackerserver.get_metainfo` | Timer | none | Latency of metainfo retrieval proxy. |
+| `version` (module) | Gauge/Counter | build info | Emitted once to tag service version (implementation specific). |
+| (Redis internal) | External | n/a | Recommend complement with Redis ops/sec, latency. |
+
+Suggested Additions (not yet implemented): announce error counter, peerstore sample size histogram, originstore cache hit ratio, dedup limiter contention gauge.
 
 ---
 
@@ -233,6 +365,15 @@ Grace under Load: Tracker performs minimal CPU work (JSON parsing, map updates, 
 * TLS recommended (nginx front) to prevent passive network inspection / injection of announces.
 * Potential abuse: Flood of bogus announces for random infohashes -> memory pressure; employ rate limiting / per-IP quotas outside tracker or extend server middleware.
 
+### Hardening Recommendations
+| Threat | Mitigation |
+|--------|------------|
+| Sybil attack inflating peer set | Enforce mTLS or per-peer auth token; cap peers per source IP / CIDR. |
+| Infohash scanning (enumeration) | Rate limit announces with unknown digests; optional bloom filter of known digests. |
+| Completion spoofing | Cross-check reported completion with observed upload stats (future metric). |
+| Replay of stale announces | Include monotonic timestamp / nonce signed by agent key (future extension). |
+| Resource exhaustion via large payloads | Enforce request size limit at reverse proxy (nginx) and early decode guard. |
+
 ---
 
 ## Extension Points
@@ -244,6 +385,9 @@ Grace under Load: Tracker performs minimal CPU work (JSON parsing, map updates, 
 | Additional announce validation | Insert middleware / wrapper around `announce()` to enforce ACLs or token checks. |
 | Enhanced origin selection | Modify `originstore` to weight origins by load / latency metrics. |
 | Adaptive announce interval | Return per-peer dynamic interval based on health / completeness. |
+| Custom discovery backends | Implement peerstore adapter for alternative KV (etcd, consul). |
+| Enhanced metainfo routing | Layer LRU caching of metainfo in tracker to reduce origin calls. |
+| Quota plugin | Pre-handout hook to enforce global / namespace peer caps. |
 
 ---
 
@@ -267,6 +411,25 @@ Body: {
 
 Peer then connects to provided peers (subject to its scheduler's connection limits) and begins piece exchange.
 
+### Sequence Diagram (Abstract)
+```
+Agent                Tracker              PeerStore          OriginStore            OriginCluster
+ |  Announce (d,h,p)  |                      |                   |                          |
+ |------------------->|                      |                   |                          |
+ |                    | UpdatePeer(h,p)      |                   |                          |
+ |                    |--------------------->|                   |                          |
+ |                    |   peers[]=...        |                   |                          |
+ |                    |<---------------------|                   |                          |
+ |                    | GetOrigins(d)        |                   |                          |
+ |                    |------------------------------------------>|   locations / contexts   |
+ |                    |                         origins[]         |<-------------------------|
+ |                    | Merge+Sort peers+origins                  |                          |
+ |   Response(peers)  |                      |                   |                          |
+ |<-------------------|                      |                   |                          |
+```
+
+Sorting step applies chosen policy; origins appear as `Complete` seeders.
+
 ---
 
 ## Future Enhancements (Ideas)
@@ -276,6 +439,10 @@ Peer then connects to provided peers (subject to its scheduler's connection limi
 * Peer reputation scoring (upload contribution weighting) integrated into priority policy.
 * Secure announce tokens / HMAC to prevent spoofing.
 * Backpressure signals to origins to modulate seeding load.
+* Tracker-level L2 metainfo cache for hot torrents.
+* Dynamic peer handout limits based on swarm size growth curves.
+* Pluggable selection strategy aware of network topology (rack / AZ locality weighting).
+* Redis bloom filter to detect duplicate announces faster.
 
 ---
 
