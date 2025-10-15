@@ -35,6 +35,7 @@ UNAME_S := $(shell uname -s)
 # However, for tools like puller that don't use cgo, we can build natively on macOS.
 CROSS_COMPILER = \
   docker run --rm \
+    --platform linux/amd64 \
     -v $(REPO_ROOT):/app \
     -w /app \
     -e GIT_SSL_NO_VERIFY=true \
@@ -78,13 +79,13 @@ endef
 
 .PHONY: images
 images: $(LINUX_BINS)
-	docker build $(BUILD_QUIET) -t kraken-agent:$(PACKAGE_VERSION) -f docker/agent/Dockerfile ./
-	docker build $(BUILD_QUIET) -t kraken-build-index:$(PACKAGE_VERSION) -f docker/build-index/Dockerfile ./
-	docker build $(BUILD_QUIET) -t kraken-origin:$(PACKAGE_VERSION) -f docker/origin/Dockerfile ./
-	docker build $(BUILD_QUIET) -t kraken-proxy:$(PACKAGE_VERSION) -f docker/proxy/Dockerfile ./
-	docker build $(BUILD_QUIET) -t kraken-testfs:$(PACKAGE_VERSION) -f docker/testfs/Dockerfile ./
-	docker build $(BUILD_QUIET) -t kraken-tracker:$(PACKAGE_VERSION) -f docker/tracker/Dockerfile ./
-	docker build $(BUILD_QUIET) -t kraken-herd:$(PACKAGE_VERSION) -f docker/herd/Dockerfile ./
+	docker build  --platform linux/amd64 $(BUILD_QUIET) -t kraken-agent:$(PACKAGE_VERSION) -f docker/agent/Dockerfile ./
+	docker build  --platform linux/amd64 $(BUILD_QUIET) -t kraken-build-index:$(PACKAGE_VERSION) -f docker/build-index/Dockerfile ./
+	docker build  --platform linux/amd64 $(BUILD_QUIET) -t kraken-origin:$(PACKAGE_VERSION) -f docker/origin/Dockerfile ./
+	docker build  --platform linux/amd64 $(BUILD_QUIET) -t kraken-proxy:$(PACKAGE_VERSION) -f docker/proxy/Dockerfile ./
+	docker build  --platform linux/amd64 $(BUILD_QUIET) -t kraken-testfs:$(PACKAGE_VERSION) -f docker/testfs/Dockerfile ./
+	docker build  --platform linux/amd64 $(BUILD_QUIET) -t kraken-tracker:$(PACKAGE_VERSION) -f docker/tracker/Dockerfile ./
+	docker build  --platform linux/amd64  -t kraken-herd:$(PACKAGE_VERSION) -f docker/herd/Dockerfile ./
 	$(call tag_image,kraken-agent)
 	$(call tag_image,kraken-build-index)
 	$(call tag_image,kraken-origin)
@@ -138,8 +139,8 @@ integration: venv $(LINUX_BINS) docker_stop tools/bin/puller/puller
 	docker build $(BUILD_QUIET) -t kraken-build-index:$(PACKAGE_VERSION) -f docker/build-index/Dockerfile --build-arg USERID=$(USERID) --build-arg USERNAME=$(USERNAME) ./
 	docker build $(BUILD_QUIET) -t kraken-origin:$(PACKAGE_VERSION) -f docker/origin/Dockerfile --build-arg USERID=$(USERID) --build-arg USERNAME=$(USERNAME) ./
 	docker build $(BUILD_QUIET) -t kraken-proxy:$(PACKAGE_VERSION) -f docker/proxy/Dockerfile --build-arg USERID=$(USERID) --build-arg USERNAME=$(USERNAME) ./
-	docker build $(BUILD_QUIET) -t kraken-testfs:$(PACKAGE_VERSION) -f docker/testfs/Dockerfile --build-arg USERID=$(USERID) --build-arg USERNAME=$(USERNAME) ./
-	docker build $(BUILD_QUIET) -t kraken-tracker:$(PACKAGE_VERSION) -f docker/tracker/Dockerfile --build-arg USERID=$(USERID) --build-arg USERNAME=$(USERNAME) ./
+	docker build  -t kraken-testfs:$(PACKAGE_VERSION) -f docker/testfs/Dockerfile --build-arg USERID=$(USERID) --build-arg USERNAME=$(USERNAME) ./
+	docker build  -t kraken-tracker:$(PACKAGE_VERSION) -f docker/tracker/Dockerfile --build-arg USERID=$(USERID) --build-arg USERNAME=$(USERNAME) ./
 	cd test && PYTHONPATH=. PACKAGE_VERSION=$(PACKAGE_VERSION) PYTHONWARNINGS=ignore ../venv/bin/python3 -m pytest --timeout=120 -v -k $(NAME) python/$(FILE)
 
 .PHONY: runtest
