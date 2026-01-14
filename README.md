@@ -137,6 +137,23 @@ $ make devcluster
 Docker-for-Mac is required for making dev-cluster work on your laptop.
 For more information on devcluster, please check out devcluster [README](examples/devcluster/README.md).
 
+## VM Deployment Guides
+
+For deploying Kraken on VMs (especially for testing cross-platform builds):
+
+- **[Single VM Deployment](KRAKEN_VM_DEPLOYMENT.md)** - Deploy Kraken on a single x86_64 VM (build from Mac ARM64)
+- **[Multi-VM Deployment](MULTI_VM_DEPLOYMENT.md)** - Deploy Kraken across 3 VMs (Herd + 2 Agents)
+- **[Multi-VM Testing Runbook](MULTI_VM_TESTING_RUNBOOK.md)** - Comprehensive testing procedures for multi-VM setup
+- **[Quick Reference](MULTI_VM_QUICK_REFERENCE.md)** - Quick command reference for multi-VM deployment
+
+Quick deploy script for multi-VM:
+```bash
+export VM1_HOST="your-vm1-hostname"
+export VM2_HOST="your-vm2-hostname"
+export VM3_HOST="your-vm3-hostname"
+./scripts/deploy_multi_vm.sh
+```
+
 # Comparison With Other Projects
 
 ## Dragonfly from Alibaba
